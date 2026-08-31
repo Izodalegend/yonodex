@@ -100,17 +100,18 @@ contract Pool is ReentrancyGuard {
         amountOut = getAmountOut(amountIn, reserveIn, reserveOut);
         require(amountOut > 0, "Insufficient output");
 
-        IERC20(tokenIn).transferFrom(msg.sender, address(this), amountIn);
-
+        // ✅ Update state FIRST (Checks-Effects-Interactions)
         if (tokenIn == token0) {
-            IERC20(token1).transfer(msg.sender, amountOut);
             reserve0 += amountIn;
             reserve1 -= amountOut;
+            IERC20(token1).transfer(msg.sender, amountOut);
         } else {
-            IERC20(token0).transfer(msg.sender, amountOut);
             reserve1 += amountIn;
             reserve0 -= amountOut;
+            IERC20(token0).transfer(msg.sender, amountOut);
         }
+
+        IERC20(tokenIn).transferFrom(msg.sender, address(this), amountIn);
         emit Swap(msg.sender, tokenIn, amountIn, amountOut);
     }
 

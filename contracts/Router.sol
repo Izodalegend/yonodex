@@ -35,8 +35,8 @@ contract Router is ERC2771Context {
         IERC20(tokenA).transferFrom(_msgSender(), address(this), amountA);
         IERC20(tokenB).transferFrom(_msgSender(), address(this), amountB);
 
-        IERC20(tokenA).approve(pool, amountA);
-        IERC20(tokenB).approve(pool, amountB);
+        require(IERC20(tokenA).approve(pool, amountA), "Approve A failed");
+        require(IERC20(tokenB).approve(pool, amountB), "Approve B failed");
 
         Pool(pool).addLiquidityFor(amountA, amountB, _msgSender());
     }
@@ -70,7 +70,7 @@ contract Router is ERC2771Context {
         require(block.timestamp <= deadline, "Router: expired");
         
         IERC20(tokenIn).transferFrom(_msgSender(), address(this), amountIn);
-        IERC20(tokenIn).approve(pool, amountIn);
+        require(IERC20(tokenIn).approve(pool, amountIn), "Approve failed");
         amountOut = Pool(pool).swap(tokenIn, amountIn);
         
         require(amountOut >= amountOutMin, "Router: slippage too high");
