@@ -14,8 +14,15 @@
     "console": "npx hardhat console --network localhost"
   },
   "dependencies": {
+    "@libp2p/gossipsub": "^17.1.1",
+    "@libp2p/identify": "^4.1.14",
+    "@libp2p/mplex": "^12.0.31",
+    "@libp2p/plaintext": "^3.0.28",
+    "@libp2p/pubsub": "^10.1.18",
+    "@libp2p/tcp": "^11.0.28",
     "@nomicfoundation/hardhat-toolbox-mocha-ethers": "^3.0.0",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "libp2p": "^3.3.10"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-ethers": "^4.0.10",
