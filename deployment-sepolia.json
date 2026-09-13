@@ -1,0 +1,12 @@
+{
+  "network": "sepolia",
+  "chainId": 11155111,
+  "deployedAt": "2026-09-13",
+  "contracts": {
+    "TrustedForwarder": "0x269630E8457166efA355038d31eaC355c8569b40",
+    "Router": "0x1cf4Fa805917Dde8E5D7c7afa5bb52130541DA73",
+    "TokenA": "0x1c047809679F026b3f4c2619d0F89BB319922422",
+    "TokenB": "0x61dCbEDbf407812E9f3ad89973246692087D6f42",
+    "Pool": "0xC5F01fedCD2b484B946b6b9c0fb46b82a7FD726B"
+  }
+}
