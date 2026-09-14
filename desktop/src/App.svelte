@@ -1,89 +1,91 @@
-<script>
-  import svelteLogo from './assets/svelte.svg'
-  import viteLogo from './assets/vite.svg'
-  import heroImg from './assets/hero.png'
-  import Counter from './lib/Counter.svelte'
+<script lang="ts">
+  const version = "0.1.0";
 </script>
 
-<section id="center">
-  <div class="hero">
-    <img src={heroImg} class="base" width="170" height="179" alt="" />
-    <img src={svelteLogo} class="framework" alt="Svelte logo" />
-    <img src={viteLogo} class="vite" alt="Vite logo" />
-  </div>
-  <div>
-    <h1>Get started</h1>
-    <p>Edit <code>src/App.svelte</code> and save to test <code>HMR</code></p>
-  </div>
-  <Counter />
-</section>
+<main>
+  <header>
+    <h1>Yonodex</h1>
+    <p class="tagline">Decentralized Exchange</p>
+  </header>
 
-<div class="ticks"></div>
+  <section class="status">
+    <div class="card">
+      <h2>Desktop Client</h2>
+      <p>Version {version}</p>
+      <p class="muted">Wallet and portfolio coming in 1.B</p>
+    </div>
+  </section>
 
-<section id="next-steps">
-  <div id="docs">
-    <svg class="icon" role="presentation" aria-hidden="true">
-      <use href="/icons.svg#documentation-icon"></use>
-    </svg>
-    <h2>Documentation</h2>
-    <p>Your questions, answered</p>
-    <ul>
-      <li>
-        <a href="https://vite.dev/" target="_blank" rel="noreferrer">
-          <img class="logo" src={viteLogo} alt="" />
-          Explore Vite
-        </a>
-      </li>
-      <li>
-        <a href="https://svelte.dev/" target="_blank" rel="noreferrer">
-          <img class="button-icon" src={svelteLogo} alt="" />
-          Learn more
-        </a>
-      </li>
-    </ul>
-  </div>
-  <div id="social">
-    <svg class="icon" role="presentation" aria-hidden="true">
-      <use href="/icons.svg#social-icon"></use>
-    </svg>
-    <h2>Connect with us</h2>
-    <p>Join the Vite community</p>
-    <ul>
-      <li>
-        <a href="https://github.com/vitejs/vite" target="_blank" rel="noreferrer">
-          <svg class="button-icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#github-icon"></use>
-          </svg>
-          GitHub
-        </a>
-      </li>
-      <li>
-        <a href="https://chat.vite.dev/" target="_blank" rel="noreferrer">
-          <svg class="button-icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#discord-icon"></use>
-          </svg>
-          Discord
-        </a>
-      </li>
-      <li>
-        <a href="https://x.com/vite_js" target="_blank" rel="noreferrer">
-          <svg class="button-icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#x-icon"></use>
-          </svg>
-          X.com
-        </a>
-      </li>
-      <li>
-        <a href="https://bsky.app/profile/vite.dev" target="_blank" rel="noreferrer">
-          <svg class="button-icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#bluesky-icon"></use>
-          </svg>
-          Bluesky
-        </a>
-      </li>
-    </ul>
-  </div>
-</section>
+  <footer>
+    <p>AGPL-3.0 · Yonodex Team</p>
+  </footer>
+</main>
 
-<div class="ticks"></div>
-<section id="spacer"></section>
+<style>
+  :global(body) {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0f0f12;
+    color: #e8e8ec;
+  }
+
+  main {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+    gap: 3rem;
+  }
+
+  header {
+    text-align: center;
+  }
+
+   h1 {
+    font-size: 3rem;
+    margin: 0;
+    line-height: 1.4;
+    padding: 0.2em 0;
+    background: linear-gradient(135deg, #a78bfa, #7c3aed);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .tagline {
+    color: #8b8b94;
+    margin-top: 0.5rem;
+    font-size: 1.1rem;
+  }
+
+  .card {
+    background: #1a1a1f;
+    border: 1px solid #2a2a32;
+    border-radius: 12px;
+    padding: 2rem;
+    max-width: 400px;
+    text-align: center;
+  }
+
+  .card h2 {
+    margin: 0 0 1rem 0;
+    color: #e8e8ec;
+  }
+
+  .card p {
+    margin: 0.5rem 0;
+    color: #b8b8c0;
+  }
+
+  .muted {
+    color: #6b6b74 !important;
+    font-size: 0.9rem;
+  }
+
+  footer {
+    color: #6b6b74;
+    font-size: 0.85rem;
+  }
+</style>
