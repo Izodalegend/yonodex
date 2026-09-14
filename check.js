@@ -1,0 +1,1 @@
+import { ethers } from "ethers"; const wallet = new ethers.Wallet("0xc4fa308df2fe8baf409ac497723f15d4f94605acb162e979664bd7154a35965f"); const provider = new ethers.JsonRpcProvider("https://sepolia.infura.io/v3/7cc54e6c6a2146b1963a922ab3ce5b0c"); provider.getBalance(wallet.address).then(b => console.log("Address:", wallet.address, "Balance (ETH):", ethers.formatEther(b)));

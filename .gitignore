@@ -67,3 +67,8 @@ node_modules/
 frontend/node_modules/
 relayer/node_modules/
 krait/
+
+# Rust / Tauri
+src-tauri/target/
+desktop/dist/
+node_modules/
