@@ -1,5 +1,19 @@
 <script lang="ts">
+  import WalletConnect from "./lib/WalletConnect.svelte";
+  import Portfolio from "./lib/Portfolio.svelte";
+  import type { EIP1193Provider } from "./wallet";
+
   const version = "0.1.0";
+
+  let wallet = $state<{ address: string; provider: EIP1193Provider } | null>(null);
+
+  function handleConnect(data: { address: string; provider: EIP1193Provider }) {
+    wallet = data;
+  }
+
+  function handleDisconnect() {
+    wallet = null;
+  }
 </script>
 
 <main>
@@ -10,14 +24,22 @@
 
   <section class="status">
     <div class="card">
-      <h2>Desktop Client</h2>
-      <p>Version {version}</p>
-      <p class="muted">Wallet and portfolio coming in 1.B</p>
+      <h2>Wallet</h2>
+      <WalletConnect onconnect={handleConnect} ondisconnect={handleDisconnect} />
+    </div>
+
+    <div class="card">
+      <h2>Portfolio</h2>
+      {#if wallet}
+        <Portfolio address={wallet.address} />
+      {:else}
+        <p class="muted">Connect a wallet to view balances</p>
+      {/if}
     </div>
   </section>
 
   <footer>
-    <p>AGPL-3.0 · Yonodex Team</p>
+    <p>v{version} - AGPL-3.0 - Yonodex Team</p>
   </footer>
 </main>
 
@@ -43,7 +65,7 @@
     text-align: center;
   }
 
-   h1 {
+  h1 {
     font-size: 3rem;
     margin: 0;
     line-height: 1.4;
@@ -60,18 +82,26 @@
     font-size: 1.1rem;
   }
 
+  .status {
+    display: flex;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
   .card {
     background: #1a1a1f;
     border: 1px solid #2a2a32;
     border-radius: 12px;
     padding: 2rem;
-    max-width: 400px;
+    min-width: 280px;
     text-align: center;
   }
 
   .card h2 {
-    margin: 0 0 1rem 0;
+    margin: 0 0 1.5rem 0;
     color: #e8e8ec;
+    font-size: 1.1rem;
   }
 
   .card p {
