@@ -1,11 +1,31 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import WalletConnect from "./lib/WalletConnect.svelte";
   import Portfolio from "./lib/Portfolio.svelte";
+  import TradeHistory from "./lib/TradeHistory.svelte";
+  import Unlock from "./lib/Unlock.svelte";
+  import { dbIsUnlocked } from "./db";
   import type { EIP1193Provider } from "./wallet";
 
   const version = "0.1.0";
 
+  let unlocked = $state(false);
+  let checkingUnlock = $state(true);
   let wallet = $state<{ address: string; provider: EIP1193Provider } | null>(null);
+
+  onMount(async () => {
+    try {
+      unlocked = await dbIsUnlocked();
+    } catch {
+      unlocked = false;
+    } finally {
+      checkingUnlock = false;
+    }
+  });
+
+  function handleUnlock() {
+    unlocked = true;
+  }
 
   function handleConnect(data: { address: string; provider: EIP1193Provider }) {
     wallet = data;
@@ -22,21 +42,38 @@
     <p class="tagline">Decentralized Exchange</p>
   </header>
 
-  <section class="status">
+  {#if checkingUnlock}
     <div class="card">
-      <h2>Wallet</h2>
-      <WalletConnect onconnect={handleConnect} ondisconnect={handleDisconnect} />
+      <p class="muted">Loading...</p>
     </div>
+  {:else if !unlocked}
+    <div class="card">
+      <Unlock onunlock={handleUnlock} />
+    </div>
+  {:else}
+    <section class="status">
+      <div class="card">
+        <h2>Wallet</h2>
+        <WalletConnect onconnect={handleConnect} ondisconnect={handleDisconnect} />
+      </div>
 
-    <div class="card">
-      <h2>Portfolio</h2>
-      {#if wallet}
-        <Portfolio address={wallet.address} />
-      {:else}
-        <p class="muted">Connect a wallet to view balances</p>
-      {/if}
-    </div>
-  </section>
+      <div class="card">
+        <h2>Portfolio</h2>
+        {#if wallet}
+          <Portfolio address={wallet.address} />
+        {:else}
+          <p class="muted">Connect a wallet to view balances</p>
+        {/if}
+      </div>
+    </section>
+
+    <section class="full-width">
+      <div class="card wide">
+        <h2>Trade History</h2>
+        <TradeHistory />
+      </div>
+    </section>
+  {/if}
 
   <footer>
     <p>v{version} - AGPL-3.0 - Yonodex Team</p>
@@ -56,13 +93,14 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: center;
+    justify-content: flex-start;
     padding: 2rem;
-    gap: 3rem;
+    gap: 2rem;
   }
 
   header {
     text-align: center;
+    margin-top: 1rem;
   }
 
   h1 {
@@ -89,6 +127,12 @@
     justify-content: center;
   }
 
+  .full-width {
+    display: flex;
+    justify-content: center;
+    width: 100%;
+  }
+
   .card {
     background: #1a1a1f;
     border: 1px solid #2a2a32;
@@ -96,6 +140,11 @@
     padding: 2rem;
     min-width: 280px;
     text-align: center;
+  }
+
+  .card.wide {
+    max-width: 720px;
+    width: 100%;
   }
 
   .card h2 {
@@ -117,5 +166,6 @@
   footer {
     color: #6b6b74;
     font-size: 0.85rem;
+    margin-bottom: 1rem;
   }
 </style>

@@ -3,14 +3,12 @@
   import {
     discoverWallets,
     detectFrame,
-    saveConnection,
-    loadConnection,
-    clearConnection,
     switchChain,
     isOnChain,
     type DetectedWallet,
     type EIP1193Provider,
   } from "../wallet";
+  import { saveWalletConfig, loadWalletConfig, clearWalletConfig } from "../db";
   import { CHAINS, DEFAULT_CHAIN } from "../config";
 
   let {
@@ -53,7 +51,12 @@
   }
 
   async function restore() {
-    const saved = loadConnection();
+    let saved;
+    try {
+      saved = await loadWalletConfig();
+    } catch {
+      return;
+    }
     if (!saved) return;
 
     const frame = await detectFrame();
@@ -100,12 +103,19 @@
         method: "eth_chainId",
       })) as string;
       connected = { address: accounts[0], chainId, wallet };
-      saveConnection({
-        address: accounts[0],
-        chainId,
-        walletUuid: wallet.info.uuid,
-        walletName: wallet.info.name,
-      });
+
+      try {
+        await saveWalletConfig({
+          address: accounts[0],
+          chain_id: chainId,
+          wallet_uuid: wallet.info.uuid,
+          wallet_name: wallet.info.name,
+        });
+      } catch (e) {
+        // Non-fatal - connection still works this session
+        console.error("Failed to persist wallet config:", e);
+      }
+
       await checkChain(wallet);
       onconnect?.({ address: accounts[0], provider: wallet.provider });
     } catch (e) {
@@ -138,8 +148,12 @@
     }
   }
 
-  function handleDisconnect() {
-    clearConnection();
+  async function handleDisconnect() {
+    try {
+      await clearWalletConfig();
+    } catch (e) {
+      console.error("Failed to clear wallet config:", e);
+    }
     connected = null;
     wrongChain = false;
     error = null;

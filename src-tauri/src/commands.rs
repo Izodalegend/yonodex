@@ -45,25 +45,38 @@ pub struct WalletConfigPayload {
 }
 
 #[tauri::command]
-pub fn db_is_unlocked(state: State<AppState>) -> bool {
+pub fn db_is_unlocked(state: State<'_, AppState>) -> bool {
     state.db.lock().map(|g| g.is_some()).unwrap_or(false)
+}
+#[tauri::command]
+pub fn db_is_initialized(app: tauri::AppHandle) -> Result<bool, String> {
+    let path = db_path(&app)?;
+    Ok(db::is_initialized(&path))
 }
 
 #[tauri::command]
-pub fn unlock_db(
+pub async fn unlock_db(
     app: tauri::AppHandle,
-    state: State<AppState>,
+    state: State<'_, AppState>,
     password: String,
 ) -> Result<(), String> {
     let path = db_path(&app)?;
-    let handle = db::open(&path, &password).map_err(|e| e.to_string())?;
+
+    // Run Argon2id + SQLCipher open on a blocking thread pool.
+    // This keeps the UI responsive while the key is being derived.
+    let handle = tauri::async_runtime::spawn_blocking(move || {
+        db::open(&path, &password).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("join error: {e}"))??;
+
     let mut guard = state.db.lock().map_err(|e| e.to_string())?;
     *guard = Some(handle);
     Ok(())
 }
 
 #[tauri::command]
-pub fn lock_db(state: State<AppState>) -> Result<(), String> {
+pub fn lock_db(state: State<'_, AppState>) -> Result<(), String> {
     let mut guard = state.db.lock().map_err(|e| e.to_string())?;
     *guard = None;
     Ok(())
@@ -71,7 +84,7 @@ pub fn lock_db(state: State<AppState>) -> Result<(), String> {
 
 #[tauri::command]
 pub fn save_wallet_config(
-    state: State<AppState>,
+    state: State<'_, AppState>,
     address: String,
     chain_id: String,
     wallet_uuid: String,
@@ -85,7 +98,7 @@ pub fn save_wallet_config(
 
 #[tauri::command]
 pub fn load_wallet_config(
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<Option<WalletConfigPayload>, String> {
     let guard = state.db.lock().map_err(|e| e.to_string())?;
     let db = guard.as_ref().ok_or("database is locked")?;
@@ -101,8 +114,117 @@ pub fn load_wallet_config(
 }
 
 #[tauri::command]
-pub fn clear_wallet_config(state: State<AppState>) -> Result<(), String> {
+pub fn clear_wallet_config(state: State<'_, AppState>) -> Result<(), String> {
     let guard = state.db.lock().map_err(|e| e.to_string())?;
     let db = guard.as_ref().ok_or("database is locked")?;
     db::clear_wallet_config(db).map_err(|e| e.to_string())
+}
+
+#[derive(serde::Serialize)]
+pub struct TradeRecordPayload {
+    pub id: i64,
+    pub tx_hash: Option<String>,
+    pub chain_id: String,
+    pub pair: String,
+    pub side: String,
+    pub amount_in: String,
+    pub amount_out: String,
+    pub token_in: String,
+    pub token_out: String,
+    pub status: String,
+    pub timestamp: i64,
+    pub notes: Option<String>,
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub fn save_trade(
+    state: State<'_, AppState>,
+    tx_hash: Option<String>,
+    chain_id: String,
+    pair: String,
+    side: String,
+    amount_in: String,
+    amount_out: String,
+    token_in: String,
+    token_out: String,
+    status: String,
+    notes: Option<String>,
+) -> Result<i64, String> {
+    let guard = state.db.lock().map_err(|e| e.to_string())?;
+    let db = guard.as_ref().ok_or("database is locked")?;
+    db::save_trade(
+        db,
+        tx_hash.as_deref(),
+        &chain_id,
+        &pair,
+        &side,
+        &amount_in,
+        &amount_out,
+        &token_in,
+        &token_out,
+        &status,
+        notes.as_deref(),
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn load_trades(
+    state: State<'_, AppState>,
+    limit: Option<i64>,
+) -> Result<Vec<TradeRecordPayload>, String> {
+    let guard = state.db.lock().map_err(|e| e.to_string())?;
+    let db = guard.as_ref().ok_or("database is locked")?;
+    let records = db::load_trades(db, limit.unwrap_or(100)).map_err(|e| e.to_string())?;
+    Ok(records
+        .into_iter()
+        .map(|t| TradeRecordPayload {
+            id: t.id,
+            tx_hash: t.tx_hash,
+            chain_id: t.chain_id,
+            pair: t.pair,
+            side: t.side,
+            amount_in: t.amount_in,
+            amount_out: t.amount_out,
+            token_in: t.token_in,
+            token_out: t.token_out,
+            status: t.status,
+            timestamp: t.timestamp,
+            notes: t.notes,
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub fn delete_trade(state: State<'_, AppState>, id: i64) -> Result<(), String> {
+    let guard = state.db.lock().map_err(|e| e.to_string())?;
+    let db = guard.as_ref().ok_or("database is locked")?;
+    db::delete_trade(db, id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn save_password_hint(app: tauri::AppHandle, hint: String) -> Result<(), String> {
+    let path = db_path(&app)?;
+    db::save_hint(&path, &hint).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn load_password_hint(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let path = db_path(&app)?;
+    Ok(db::load_hint(&path))
+}
+
+#[tauri::command]
+pub fn reset_local_data(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    // Drop the in-memory DB handle first so the file isn't locked.
+    {
+        let mut guard = state.db.lock().map_err(|e| e.to_string())?;
+        *guard = None;
+    }
+    let path = db_path(&app)?;
+    db::reset_all(&path).map_err(|e| e.to_string())
 }

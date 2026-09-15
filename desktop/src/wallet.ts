@@ -111,35 +111,6 @@ export async function detectFrame(timeoutMs = 500): Promise<DetectedWallet | nul
   }
 }
 
-// Whitepaper Layer 3, Section 5.1: local-first architecture
-// Persist connection metadata so the app can restore state on relaunch.
-
-const STORAGE_KEY = "yonodex.wallet.connection";
-
-export interface PersistedConnection {
-  address: string;
-  chainId: string;
-  walletUuid: string;
-  walletName: string;
-}
-
-export function saveConnection(conn: PersistedConnection): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(conn));
-}
-
-export function loadConnection(): PersistedConnection | null {
-  const raw = localStorage.getItem(STORAGE_KEY);
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as PersistedConnection;
-  } catch {
-    return null;
-  }
-}
-
-export function clearConnection(): void {
-  localStorage.removeItem(STORAGE_KEY);
-}
 
 // Whitepaper Layer 3, Section 5.4: chain switching via EIP-3326
 export async function switchChain(
