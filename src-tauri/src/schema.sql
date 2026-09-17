@@ -24,11 +24,12 @@ CREATE TABLE IF NOT EXISTS wallet_config (
     connected_at    INTEGER NOT NULL
 );
 
--- Trade history (user's own trades only - no counterparty data)
--- Whitepaper Layer 3, Section 5.2: trade history retained until user deletes.
+-- Trade history - scoped per wallet address.
+-- Whitepaper Layer 3, Section 5.2: user's own trades only.
 CREATE TABLE IF NOT EXISTS trade_history (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    tx_hash         TEXT UNIQUE,
+    wallet_address  TEXT NOT NULL,
+    tx_hash         TEXT,
     chain_id        TEXT NOT NULL,
     pair            TEXT NOT NULL,
     side            TEXT NOT NULL CHECK (side IN ('buy', 'sell')),
@@ -41,8 +42,8 @@ CREATE TABLE IF NOT EXISTS trade_history (
     notes           TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_trade_history_timestamp
-    ON trade_history(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_trade_history_wallet_timestamp
+    ON trade_history(wallet_address, timestamp DESC);
 
 CREATE INDEX IF NOT EXISTS idx_trade_history_pair
     ON trade_history(pair);

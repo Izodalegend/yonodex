@@ -1,8 +1,5 @@
 // Yonodex Desktop Client - Encrypted DB client wrapper
 // Whitepaper Layer 3, Section 5.2: encrypted DB access from Svelte
-//
-// Thin TypeScript layer over the Rust Tauri commands.
-// The DB stays locked until the user provides their master password.
 
 import { invoke } from "@tauri-apps/api/core";
 
@@ -16,6 +13,7 @@ export interface WalletConfig {
 export async function dbIsUnlocked(): Promise<boolean> {
   return invoke<boolean>("db_is_unlocked");
 }
+
 export async function dbIsInitialized(): Promise<boolean> {
   return invoke<boolean>("db_is_initialized");
 }
@@ -45,8 +43,23 @@ export async function clearWalletConfig(): Promise<void> {
   return invoke("clear_wallet_config");
 }
 
+export async function savePasswordHint(hint: string): Promise<void> {
+  return invoke("save_password_hint", { hint });
+}
+
+export async function loadPasswordHint(): Promise<string | null> {
+  return invoke<string | null>("load_password_hint");
+}
+
+export async function resetLocalData(): Promise<void> {
+  return invoke("reset_local_data");
+}
+
+// ---- Trade history (scoped per wallet) ----
+
 export interface TradeRecord {
   id: number;
+  wallet_address: string;
   tx_hash: string | null;
   chain_id: string;
   pair: string;
@@ -60,8 +73,11 @@ export interface TradeRecord {
   notes: string | null;
 }
 
-export async function saveTrade(trade: Omit<TradeRecord, "id" | "timestamp">): Promise<number> {
+export type NewTrade = Omit<TradeRecord, "id" | "timestamp">;
+
+export async function saveTrade(trade: NewTrade): Promise<number> {
   return invoke<number>("save_trade", {
+    walletAddress: trade.wallet_address,
     txHash: trade.tx_hash,
     chainId: trade.chain_id,
     pair: trade.pair,
@@ -75,22 +91,16 @@ export async function saveTrade(trade: Omit<TradeRecord, "id" | "timestamp">): P
   });
 }
 
-export async function loadTrades(limit = 100): Promise<TradeRecord[]> {
-  return invoke<TradeRecord[]>("load_trades", { limit });
+export async function loadTrades(
+  walletAddress: string,
+  limit = 100
+): Promise<TradeRecord[]> {
+  return invoke<TradeRecord[]>("load_trades", {
+    walletAddress,
+    limit,
+  });
 }
 
 export async function deleteTrade(id: number): Promise<void> {
   return invoke("delete_trade", { id });
-}
-
-export async function savePasswordHint(hint: string): Promise<void> {
-  return invoke("save_password_hint", { hint });
-}
-
-export async function loadPasswordHint(): Promise<string | null> {
-  return invoke<string | null>("load_password_hint");
-}
-
-export async function resetLocalData(): Promise<void> {
-  return invoke("reset_local_data");
 }

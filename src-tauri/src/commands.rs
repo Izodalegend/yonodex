@@ -48,6 +48,7 @@ pub struct WalletConfigPayload {
 pub fn db_is_unlocked(state: State<'_, AppState>) -> bool {
     state.db.lock().map(|g| g.is_some()).unwrap_or(false)
 }
+
 #[tauri::command]
 pub fn db_is_initialized(app: tauri::AppHandle) -> Result<bool, String> {
     let path = db_path(&app)?;
@@ -62,8 +63,6 @@ pub async fn unlock_db(
 ) -> Result<(), String> {
     let path = db_path(&app)?;
 
-    // Run Argon2id + SQLCipher open on a blocking thread pool.
-    // This keeps the UI responsive while the key is being derived.
     let handle = tauri::async_runtime::spawn_blocking(move || {
         db::open(&path, &password).map_err(|e| e.to_string())
     })
@@ -120,9 +119,37 @@ pub fn clear_wallet_config(state: State<'_, AppState>) -> Result<(), String> {
     db::clear_wallet_config(db).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub fn save_password_hint(app: tauri::AppHandle, hint: String) -> Result<(), String> {
+    let path = db_path(&app)?;
+    db::save_hint(&path, &hint).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn load_password_hint(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let path = db_path(&app)?;
+    Ok(db::load_hint(&path))
+}
+
+#[tauri::command]
+pub fn reset_local_data(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    {
+        let mut guard = state.db.lock().map_err(|e| e.to_string())?;
+        *guard = None;
+    }
+    let path = db_path(&app)?;
+    db::reset_all(&path).map_err(|e| e.to_string())
+}
+
+// ---- Trade history (scoped per wallet) ----
+
 #[derive(serde::Serialize)]
 pub struct TradeRecordPayload {
     pub id: i64,
+    pub wallet_address: String,
     pub tx_hash: Option<String>,
     pub chain_id: String,
     pub pair: String,
@@ -140,6 +167,7 @@ pub struct TradeRecordPayload {
 #[allow(clippy::too_many_arguments)]
 pub fn save_trade(
     state: State<'_, AppState>,
+    wallet_address: String,
     tx_hash: Option<String>,
     chain_id: String,
     pair: String,
@@ -155,6 +183,7 @@ pub fn save_trade(
     let db = guard.as_ref().ok_or("database is locked")?;
     db::save_trade(
         db,
+        &wallet_address,
         tx_hash.as_deref(),
         &chain_id,
         &pair,
@@ -172,15 +201,18 @@ pub fn save_trade(
 #[tauri::command]
 pub fn load_trades(
     state: State<'_, AppState>,
+    wallet_address: String,
     limit: Option<i64>,
 ) -> Result<Vec<TradeRecordPayload>, String> {
     let guard = state.db.lock().map_err(|e| e.to_string())?;
     let db = guard.as_ref().ok_or("database is locked")?;
-    let records = db::load_trades(db, limit.unwrap_or(100)).map_err(|e| e.to_string())?;
+    let records = db::load_trades(db, &wallet_address, limit.unwrap_or(100))
+        .map_err(|e| e.to_string())?;
     Ok(records
         .into_iter()
         .map(|t| TradeRecordPayload {
             id: t.id,
+            wallet_address: t.wallet_address,
             tx_hash: t.tx_hash,
             chain_id: t.chain_id,
             pair: t.pair,
@@ -201,30 +233,4 @@ pub fn delete_trade(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     let guard = state.db.lock().map_err(|e| e.to_string())?;
     let db = guard.as_ref().ok_or("database is locked")?;
     db::delete_trade(db, id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn save_password_hint(app: tauri::AppHandle, hint: String) -> Result<(), String> {
-    let path = db_path(&app)?;
-    db::save_hint(&path, &hint).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn load_password_hint(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    let path = db_path(&app)?;
-    Ok(db::load_hint(&path))
-}
-
-#[tauri::command]
-pub fn reset_local_data(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
-    // Drop the in-memory DB handle first so the file isn't locked.
-    {
-        let mut guard = state.db.lock().map_err(|e| e.to_string())?;
-        *guard = None;
-    }
-    let path = db_path(&app)?;
-    db::reset_all(&path).map_err(|e| e.to_string())
 }

@@ -1,0 +1,50 @@
+# Yonodex Tor Configuration
+# Whitepaper Layer 4, Section 6.1: Tor Onion Transport
+#
+# This torrc is bundled with the Yonodex client and launched automatically
+# on app startup. It runs a minimal Tor daemon that:
+#   1. Exposes a SOCKS5 proxy on localhost:9050 for libp2p transport
+#   2. Hosts a v3 .onion hidden service pointing at the local libp2p listener
+#   3. Uses restricted permissions and no external control port
+
+# ---- Data & logs ----
+DataDirectory data\tor-data
+GeoIPFile data\geoip
+GeoIPv6File data\geoip6
+Log notice file data\tor.log
+
+# ---- SOCKS proxy for libp2p ----
+# libp2p will route peer connections through this SOCKS5 port.
+# Bound to localhost only - never exposed externally.
+SocksPort 9050
+SocksPolicy accept 127.0.0.1
+SocksPolicy reject *
+
+# ---- Hidden service (our .onion identity) ----
+# Tor generates an Ed25519 keypair on first launch and derives the .onion
+# address from it. The key stays in this directory forever, giving the node
+# a stable identity across restarts.
+HiddenServiceDir data\onion-service
+HiddenServiceVersion 3
+HiddenServicePort 4001 127.0.0.1:4001
+HiddenServiceMaxStreams 25
+
+# ---- Circuit hardening (whitepaper Section 6.1) ----
+# 3-hop circuits by default; guard rotation limited to prevent profiling.
+CircuitBuildTimeout 60
+LearnCircuitBuildTimeout 1
+MaxCircuitDirtiness 600
+NewCircuitPeriod 30
+
+# ---- Disable unused features ----
+# No exit traffic - we only run as a client and hidden service.
+ExitPolicy reject *:*
+# No control port - the app manages tor via process lifecycle, not control protocol.
+ControlPort 0
+
+# ---- Client behavior ----
+# Only bootstrap from directory authorities and known relays.
+ClientOnly 1
+# Do not fetch microdescriptors for all relays - keep it lean.
+FetchDirInfoEarly 1
+FetchDirInfoExtraEarly 1

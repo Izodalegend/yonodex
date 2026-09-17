@@ -15,9 +15,12 @@
   let confirm = $state("");
   let hint = $state("");
   let existingHint = $state<string | null>(null);
+  let failedAttempts = $state(0);
   let submitting = $state(false);
   let error = $state<string | null>(null);
   let showResetConfirm = $state(false);
+
+  const HINT_REVEAL_THRESHOLD = 3;
 
   onMount(async () => {
     try {
@@ -61,10 +64,12 @@
       password = "";
       confirm = "";
       hint = "";
+      failedAttempts = 0;
       onunlock?.();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg.toLowerCase().includes("wrong password")) {
+        failedAttempts += 1;
         error = "Wrong password. Try again.";
       } else {
         error = msg;
@@ -77,12 +82,12 @@
   async function handleReset() {
     try {
       await resetLocalData();
-      // Reload state after reset
       initialized = false;
       existingHint = null;
       password = "";
       confirm = "";
       hint = "";
+      failedAttempts = 0;
       error = null;
       showResetConfirm = false;
     } catch (e) {
@@ -135,8 +140,8 @@
     <h2>Unlock Yonodex</h2>
     <p class="hint">Enter your master password to decrypt local data.</p>
 
-    {#if existingHint}
-      <p class="hint-small">Hint: {existingHint}</p>
+    {#if existingHint && failedAttempts >= HINT_REVEAL_THRESHOLD}
+      <p class="hint-revealed">Hint: {existingHint}</p>
     {/if}
 
     <form onsubmit={handleSubmit}>
@@ -152,6 +157,12 @@
       </button>
     </form>
 
+    {#if failedAttempts > 0 && failedAttempts < HINT_REVEAL_THRESHOLD}
+      <p class="hint-small">
+        Attempts remaining before hint shows: {HINT_REVEAL_THRESHOLD - failedAttempts}
+      </p>
+    {/if}
+
     <div class="reset-section">
       {#if showResetConfirm}
         <p class="hint-small warning-text">
@@ -159,7 +170,9 @@
         </p>
         <div class="reset-actions">
           <button class="reset-confirm" onclick={handleReset}>Yes, reset</button>
-          <button class="reset-cancel" onclick={() => (showResetConfirm = false)}>Cancel</button>
+          <button class="reset-cancel" onclick={() => (showResetConfirm = false)}>
+            Cancel
+          </button>
         </div>
       {:else}
         <button class="reset-link" onclick={() => (showResetConfirm = true)}>
@@ -203,6 +216,17 @@
     font-size: 0.75rem;
     text-align: center;
     margin: 0;
+  }
+
+  .hint-revealed {
+    color: #a78bfa;
+    font-size: 0.85rem;
+    text-align: center;
+    margin: 0;
+    padding: 0.5rem 0.75rem;
+    background: rgba(167, 139, 250, 0.08);
+    border: 1px solid rgba(167, 139, 250, 0.2);
+    border-radius: 6px;
   }
 
   .hint .small {

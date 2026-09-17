@@ -72,3 +72,14 @@ krait/
 src-tauri/target/
 desktop/dist/
 node_modules/
+
+
+# Tor runtime data - CONTAINS SECRETS - never commit
+src-tauri/resources/tor/data/
+
+# Tor binary duplicate - lives in resources/tor/ already
+src-tauri/tor/
+
+# Tor binaries in resources are distributed via releases, not git
+# (uncomment the line below if the repo gets too large)
+# src-tauri/resources/tor/tor/

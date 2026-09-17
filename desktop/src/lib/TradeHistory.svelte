@@ -3,6 +3,8 @@
   import { loadTrades, saveTrade, deleteTrade, type TradeRecord } from "../db";
   import { CHAINS, DEFAULT_CHAIN, CONTRACTS } from "../config";
 
+  let { address }: { address: string } = $props();
+
   let trades = $state<TradeRecord[]>([]);
   let loading = $state(true);
   let error = $state<string | null>(null);
@@ -29,7 +31,7 @@
     loading = true;
     error = null;
     try {
-      trades = await loadTrades(100);
+      trades = await loadTrades(address, 100);
     } catch (e) {
       error = e instanceof Error ? e.message : "Failed to load trade history";
     } finally {
@@ -46,7 +48,6 @@
     }
   }
 
-  // Dev-only helper - lets us populate the DB before Phase 2 (settlement) is live.
   async function addTestTrade() {
     const isBuy = Math.random() > 0.5;
     const amount = (0.1 + Math.random() * 1.5).toFixed(4);
@@ -54,6 +55,7 @@
 
     try {
       await saveTrade({
+        wallet_address: address,
         tx_hash: null,
         chain_id: chain.chainIdHex,
         pair: "TKA/TKB",
@@ -71,13 +73,19 @@
     }
   }
 
-  onMount(refresh);
+  $effect(() => {
+    if (address) {
+      refresh();
+    }
+  });
 </script>
 
 <div class="trade-history">
   <div class="header-row">
     <button class="action-btn" onclick={addTestTrade}>+ Test Trade</button>
-    <button class="action-btn secondary" onclick={refresh} disabled={loading}>Refresh</button>
+    <button class="action-btn secondary" onclick={refresh} disabled={loading}>
+      {loading ? "..." : "Refresh"}
+    </button>
   </div>
 
   {#if loading && trades.length === 0}
@@ -86,7 +94,7 @@
     <p class="error">{error}</p>
   {:else if trades.length === 0}
     <p class="hint">
-      No trades yet.
+      No trades yet for this wallet.
       <br />
       <span class="small">Your trades will appear here once trading is live.</span>
     </p>
@@ -104,7 +112,13 @@
               {trade.amount_in} → {trade.amount_out}
             </span>
             <span class="hash">{shortenHash(trade.tx_hash)}</span>
-            <button class="del-btn" onclick={() => handleDelete(trade.id)} title="Delete">×</button>
+            <button
+              class="del-btn"
+              onclick={() => handleDelete(trade.id)}
+              title="Delete"
+            >
+              ×
+            </button>
           </div>
         </div>
       {/each}

@@ -3,6 +3,7 @@
   import WalletConnect from "./lib/WalletConnect.svelte";
   import Portfolio from "./lib/Portfolio.svelte";
   import TradeHistory from "./lib/TradeHistory.svelte";
+  import TorStatus from "./lib/TorStatus.svelte";
   import Unlock from "./lib/Unlock.svelte";
   import { dbIsUnlocked } from "./db";
   import type { EIP1193Provider } from "./wallet";
@@ -36,49 +37,60 @@
   }
 </script>
 
-<main>
-  <header>
-    <h1>Yonodex</h1>
-    <p class="tagline">Decentralized Exchange</p>
-  </header>
+<div class="app-shell">
+  <main>
+    <header>
+      <h1>Yonodex</h1>
+      <p class="tagline">Decentralized Exchange</p>
+    </header>
 
-  {#if checkingUnlock}
-    <div class="card">
-      <p class="muted">Loading...</p>
-    </div>
-  {:else if !unlocked}
-    <div class="card">
-      <Unlock onunlock={handleUnlock} />
-    </div>
-  {:else}
-    <section class="status">
+    {#if checkingUnlock}
       <div class="card">
-        <h2>Wallet</h2>
-        <WalletConnect onconnect={handleConnect} ondisconnect={handleDisconnect} />
+        <p class="muted">Loading...</p>
       </div>
-
+    {:else if !unlocked}
       <div class="card">
-        <h2>Portfolio</h2>
-        {#if wallet}
-          <Portfolio address={wallet.address} />
-        {:else}
-          <p class="muted">Connect a wallet to view balances</p>
-        {/if}
+        <Unlock onunlock={handleUnlock} />
       </div>
-    </section>
+    {:else}
+      <section class="status">
+        <div class="card">
+          <h2>Wallet</h2>
+          <WalletConnect onconnect={handleConnect} ondisconnect={handleDisconnect} />
+        </div>
 
-    <section class="full-width">
-      <div class="card wide">
-        <h2>Trade History</h2>
-        <TradeHistory />
-      </div>
-    </section>
-  {/if}
+        <div class="card">
+          <h2>Portfolio</h2>
+          {#if wallet}
+            <Portfolio address={wallet.address} />
+          {:else}
+            <p class="muted">Connect a wallet to view balances</p>
+          {/if}
+        </div>
+      </section>
 
-  <footer>
-    <p>v{version} - AGPL-3.0 - Yonodex Team</p>
+      <section class="full-width">
+        <div class="card wide">
+          <h2>Trade History</h2>
+          {#if wallet}
+            <TradeHistory address={wallet.address} />
+          {:else}
+            <p class="muted">Connect a wallet to view trade history</p>
+          {/if}
+        </div>
+      </section>
+    {/if}
+  </main>
+
+  <footer class="status-bar">
+    <TorStatus />
+    <div class="right-meta">
+      <span>v{version}</span>
+      <span class="sep">·</span>
+      <span>AGPL-3.0</span>
+    </div>
   </footer>
-</main>
+</div>
 
 <style>
   :global(body) {
@@ -88,12 +100,21 @@
     color: #e8e8ec;
   }
 
-  main {
+  :global(html, body, #app) {
+    height: 100%;
+  }
+
+  .app-shell {
+    display: flex;
+    flex-direction: column;
     min-height: 100vh;
+  }
+
+  main {
+    flex: 1;
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: flex-start;
     padding: 2rem;
     gap: 2rem;
   }
@@ -138,7 +159,7 @@
     border: 1px solid #2a2a32;
     border-radius: 12px;
     padding: 2rem;
-    min-width: 280px;
+    min-width: 260px;
     text-align: center;
   }
 
@@ -163,9 +184,26 @@
     font-size: 0.9rem;
   }
 
-  footer {
+  /* Status bar - fixed to bottom, thin strip, never competes with content */
+  .status-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.35rem 1rem;
+    background: #131318;
+    border-top: 1px solid #26262e;
+    font-size: 0.75rem;
     color: #6b6b74;
-    font-size: 0.85rem;
-    margin-bottom: 1rem;
+    flex-shrink: 0;
+  }
+
+  .right-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+
+  .right-meta .sep {
+    color: #3a3a48;
   }
 </style>
