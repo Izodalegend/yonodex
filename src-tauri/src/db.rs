@@ -301,3 +301,42 @@ pub fn delete_trade(db: &DbHandle, id: i64) -> Result<(), DbError> {
         .map_err(|e| DbError::Sqlite(e.to_string()))?;
     Ok(())
 }
+
+// ---- Node identity (Tor .onion address) ----
+// Whitepaper Layer 4, Section 6.1: every node has a stable Tor identity.
+// The .onion address is derived from the Ed25519 keypair Tor generates on
+// first launch. We store the address (not the key) so the app can display it
+// and reason about node identity. The key stays in Tor's data directory.
+
+/// Save or refresh the node identity. Idempotent - safe to call on every launch.
+pub fn save_node_identity(db: &DbHandle, onion_address: &str) -> Result<(), DbError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    db.conn
+        .execute(
+            "INSERT INTO node_identity (id, onion_address, created_at, last_seen_at)
+             VALUES (1, ?1, ?2, ?2)
+             ON CONFLICT(id) DO UPDATE SET
+                last_seen_at = excluded.last_seen_at",
+            rusqlite::params![onion_address, now],
+        )
+        .map_err(|e| DbError::Sqlite(e.to_string()))?;
+    Ok(())
+}
+
+/// Load the stored node identity (the .onion address), if present.
+pub fn load_node_identity(db: &DbHandle) -> Result<Option<String>, DbError> {
+    let mut stmt = db
+        .conn
+        .prepare("SELECT onion_address FROM node_identity WHERE id = 1")
+        .map_err(|e| DbError::Sqlite(e.to_string()))?;
+
+    let row = stmt
+        .query_row([], |r| r.get::<_, String>(0))
+        .ok();
+
+    Ok(row)
+}

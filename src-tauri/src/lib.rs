@@ -14,6 +14,9 @@ pub fn run() {
         .manage(AppState::new())
         .manage(TorState::new())
         .invoke_handler(tauri::generate_handler![
+            commands::save_node_identity,
+            commands::load_node_identity,
+            commands::debug_dump_node_identity,
             commands::db_is_unlocked,
             commands::db_is_initialized,
             commands::unlock_db,

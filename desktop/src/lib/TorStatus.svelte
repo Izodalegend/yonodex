@@ -1,24 +1,51 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { torGetState, torGetOnionAddress, type TorState } from "../tor";
+  import { saveNodeIdentity, loadNodeIdentity } from "../db";
 
   let state = $state<TorState>("stopped");
   let onionAddress = $state<string | null>(null);
 
   let intervalId: ReturnType<typeof setInterval> | null = null;
+  let lastPersisted = $state<string | null>(null);
 
   async function refresh() {
     try {
+      // Fast path: load cached identity from encrypted DB first.
+      // This ensures the .onion shows even while Tor is bootstrapping.
+      if (!onionAddress) {
+        try {
+          const cached = await loadNodeIdentity();
+          if (cached) {
+            onionAddress = cached;
+            lastPersisted = cached;
+          }
+        } catch {
+          // DB may not be unlocked yet - silent
+        }
+      }
+
       const s = await torGetState();
       state = s;
+
       if (s === "running") {
         try {
-          onionAddress = await torGetOnionAddress();
+          const fresh = await torGetOnionAddress();
+          onionAddress = fresh;
+
+          // Persist to encrypted DB when we get a fresh address
+          // and it differs from what we last saved.
+          if (fresh && fresh !== lastPersisted) {
+            try {
+              await saveNodeIdentity(fresh);
+              lastPersisted = fresh;
+            } catch {
+              // Non-fatal - try again on next poll
+            }
+          }
         } catch {
-          onionAddress = null;
+          // Tor not ready - keep cached value if any
         }
-      } else {
-        onionAddress = null;
       }
     } catch {
       // Silent - footer indicator should never throw
@@ -51,7 +78,7 @@
       Tor offline
     {/if}
   </span>
-  {#if state === "running" && onionAddress}
+  {#if onionAddress}
     <span class="sep">·</span>
     <span class="onion" title={onionAddress}>{shortenOnion(onionAddress)}</span>
   {/if}

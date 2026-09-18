@@ -206,8 +206,8 @@ pub fn load_trades(
 ) -> Result<Vec<TradeRecordPayload>, String> {
     let guard = state.db.lock().map_err(|e| e.to_string())?;
     let db = guard.as_ref().ok_or("database is locked")?;
-    let records = db::load_trades(db, &wallet_address, limit.unwrap_or(100))
-        .map_err(|e| e.to_string())?;
+    let records =
+        db::load_trades(db, &wallet_address, limit.unwrap_or(100)).map_err(|e| e.to_string())?;
     Ok(records
         .into_iter()
         .map(|t| TradeRecordPayload {
@@ -233,4 +233,33 @@ pub fn delete_trade(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     let guard = state.db.lock().map_err(|e| e.to_string())?;
     let db = guard.as_ref().ok_or("database is locked")?;
     db::delete_trade(db, id).map_err(|e| e.to_string())
+}
+
+// ---- Node identity (Tor .onion address) ----
+
+#[tauri::command]
+pub fn save_node_identity(
+    state: State<'_, AppState>,
+    onion_address: String,
+) -> Result<(), String> {
+    let guard = state.db.lock().map_err(|e| e.to_string())?;
+    let db = guard.as_ref().ok_or("database is locked")?;
+    db::save_node_identity(db, &onion_address).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn load_node_identity(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let guard = state.db.lock().map_err(|e| e.to_string())?;
+    let db = guard.as_ref().ok_or("database is locked")?;
+    db::load_node_identity(db).map_err(|e| e.to_string())
+}
+
+// Debug-only: dump the node_identity table for verification.
+#[tauri::command]
+pub fn debug_dump_node_identity(
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    let guard = state.db.lock().map_err(|e| e.to_string())?;
+    let db = guard.as_ref().ok_or("database is locked")?;
+    db::load_node_identity(db).map_err(|e| e.to_string())
 }

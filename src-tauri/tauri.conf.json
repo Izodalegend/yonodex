@@ -9,7 +9,8 @@
     "beforeDevCommand": "npm --prefix ./desktop run dev",
     "beforeBuildCommand": "npm --prefix ./desktop run build"
   },
-  "app": {
+    "app": {
+    "withGlobalTauri": true,
     "windows": [
       {
         "title": "Yonodex",

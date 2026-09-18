@@ -5,6 +5,16 @@
 
 PRAGMA foreign_keys = ON;
 
+-- Node identity - persistent .onion address for this client's Tor hidden service.
+-- Whitepaper Layer 4, Section 6.1: every node has a stable Tor identity.
+-- Single row (id=1) - the node has exactly one identity.
+CREATE TABLE IF NOT EXISTS node_identity (
+    id              INTEGER PRIMARY KEY CHECK (id = 1),
+    onion_address   TEXT NOT NULL,
+    created_at      INTEGER NOT NULL,
+    last_seen_at    INTEGER NOT NULL
+);
+
 -- Schema version tracking (single row, id=1)
 CREATE TABLE IF NOT EXISTS schema_meta (
     id              INTEGER PRIMARY KEY CHECK (id = 1),

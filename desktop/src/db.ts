@@ -104,3 +104,13 @@ export async function loadTrades(
 export async function deleteTrade(id: number): Promise<void> {
   return invoke("delete_trade", { id });
 }
+
+// ---- Node identity (Tor .onion address) ----
+
+export async function saveNodeIdentity(onionAddress: string): Promise<void> {
+  return invoke("save_node_identity", { onionAddress });
+}
+
+export async function loadNodeIdentity(): Promise<string | null> {
+  return invoke<string | null>("load_node_identity");
+}
