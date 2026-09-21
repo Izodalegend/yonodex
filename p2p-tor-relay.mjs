@@ -1,12 +1,10 @@
 // Yonodex Desktop Client - Tor-enabled libp2p relay
 // Whitepaper Layer 4, Section 6.1: Tor Onion Transport
-// Sub-task 5: route peer connections over SOCKS5 to Tor
 //
-// This node:
-//   - Listens on 127.0.0.1:4001 (Tor hidden service forwards .onion traffic here)
-//   - Dials peers via /onion3/... multiaddrs through Tor SOCKS5 (127.0.0.1:9050)
-//   - Advertises its own .onion address so peers can reach it
-//   - Uses gossipsub to relay orders between peers
+// CLI arguments:
+//   --listen-port <port>   Local port to bind (default 4001)
+//   --dial <multiaddr>     Peer multiaddr to dial on startup
+//   --no-onion             Don't read .onion or advertise (dialer-only mode)
 
 import { createLibp2p } from 'libp2p'
 import { noise } from '@chainsafe/libp2p-noise'
@@ -30,11 +28,28 @@ const ONION_HOSTNAME_PATH = join(
   'hostname'
 )
 
-const LISTEN_PORT = 4001
 const TOPIC_ORDERS = 'yonodex-orders'
-
-// In-memory order storage (dev only - Phase 2 will use CRDT)
 const orders = []
+
+// ---- CLI parsing ----
+function parseArgs(argv) {
+  const args = {
+    listenPort: 4001,
+    dial: null,
+    noOnion: false,
+  }
+  for (let i = 2; i < argv.length; i++) {
+    const a = argv[i]
+    if (a === '--listen-port') {
+      args.listenPort = Number(argv[++i])
+    } else if (a === '--dial') {
+      args.dial = argv[++i]
+    } else if (a === '--no-onion') {
+      args.noOnion = true
+    }
+  }
+  return args
+}
 
 async function readOwnOnionAddress() {
   try {
@@ -49,23 +64,32 @@ async function readOwnOnionAddress() {
 }
 
 async function startTorRelay() {
-  const onionAddress = await readOwnOnionAddress()
-  console.log(`🔑 Our .onion address: ${onionAddress}`)
+  const args = parseArgs(process.argv)
+  console.log(`⚙️  Config: port=${args.listenPort} dial=${args.dial ?? 'none'} noOnion=${args.noOnion}`)
 
-  // Build the multiaddrs we want to advertise.
-  // The listener binds locally; Tor maps external .onion traffic to it.
-  const listenMultiaddr = `/ip4/127.0.0.1/tcp/${LISTEN_PORT}`
-  const announceMultiaddr = `/onion3/${onionAddress}:${LISTEN_PORT}`
+  let onionAddress = null
+  let announceMultiaddr = null
+
+  if (!args.noOnion) {
+    onionAddress = await readOwnOnionAddress()
+    // libp2p multiaddr format expects the bare base32 pubkey (no .onion suffix)
+    const onionKey = onionAddress.replace(/\.onion$/, '')
+    announceMultiaddr = `/onion3/${onionKey}:${args.listenPort}`
+    console.log(`🔑 Our .onion address: ${onionAddress}`)
+  } else {
+    console.log('🔇 Dialer-only mode: no hidden service advertised')
+  }
+
+  const listenMultiaddr = `/ip4/127.0.0.1/tcp/${args.listenPort}`
 
   const pubsub = gossipsub({
     allowPublishToZeroPeers: true,
     emitSelf: true,
   })
 
-  const node = await createLibp2p({
+  const nodeConfig = {
     addresses: {
       listen: [listenMultiaddr],
-      announce: [announceMultiaddr],
     },
     transports: [
       torTransport({
@@ -73,25 +97,49 @@ async function startTorRelay() {
         socksPort: 9050,
       }),
     ],
-    connectionEncryptors: [noise()],
+    connectionEncrypters: [noise()],
     streamMuxers: [mplex()],
+    // Hidden service rendezvous needs 30-90s. Default is 10s.
+    connectionManager: {
+      dialTimeout: 180_000,
+    },
     services: {
       pubsub,
       identify: identify(),
     },
-  })
+  }
+
+  if (announceMultiaddr) {
+    nodeConfig.addresses.announce = [announceMultiaddr]
+  }
+
+  const node = await createLibp2p(nodeConfig)
 
   await node.start()
 
   console.log('✅ Tor-enabled P2P relay started')
   console.log('   Peer ID:', node.peerId.toString())
   console.log('   Listening on:', node.getMultiaddrs().map((a) => a.toString()))
-  console.log(`   Advertised as: ${announceMultiaddr}`)
+  if (announceMultiaddr) {
+    console.log(`   Advertised as: ${announceMultiaddr}`)
+  }
 
   await node.services.pubsub.subscribe(TOPIC_ORDERS)
   console.log(`📡 Subscribed to topic: ${TOPIC_ORDERS}`)
 
-  // Log incoming peer connections
+  // Dial peer if provided
+  if (args.dial) {
+    try {
+      const dialMa = multiaddr(args.dial)
+      console.log(`🎯 Dialing peer: ${dialMa.toString()}`)
+      const conn = await node.dial(dialMa)
+      console.log(`🔗 Connected to peer: ${conn.remotePeer.toString()}`)
+    } catch (err) {
+      console.error(`❌ Dial failed: ${err.message}`)
+    }
+  }
+
+  // Log peer connections
   node.addEventListener('peer:connect', (evt) => {
     console.log(`🔗 Peer connected: ${evt.detail.toString()}`)
   })
@@ -111,10 +159,11 @@ async function startTorRelay() {
     }
   })
 
-  // Publish a test order every 30s (dev only)
+  // Publish a test order every 30s
   setInterval(() => {
     const testOrder = {
       id: Date.now(),
+      peerId: node.peerId.toString(),
       pair: 'ETH/USDC',
       side: 'buy',
       price: (1800 + Math.random() * 50).toFixed(2),
@@ -126,9 +175,9 @@ async function startTorRelay() {
     console.log('📤 Published test order:', testOrder)
   }, 30_000)
 
-  // Stats every minute
   setInterval(() => {
-    console.log(`📊 Total orders: ${orders.length}`)
+    const peers = node.getPeers().map((p) => p.toString())
+    console.log(`📊 Total orders: ${orders.length} | Peers: ${peers.length} [${peers.join(', ')}]`)
   }, 60_000)
 
   return node

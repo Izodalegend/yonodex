@@ -16,7 +16,7 @@ const isOnion3 = (ma) => ma.toString().startsWith('/onion3/')
 export function torTransport(options = {}) {
   const socksHost = options.socksHost ?? '127.0.0.1'
   const socksPort = options.socksPort ?? 9050
-  const onionDialTimeout = options.onionDialTimeout ?? 60_000
+  const onionDialTimeout = options.onionDialTimeout ?? 180_000
 
   return (components) => {
     // Get the base TCP transport instance from the factory
@@ -38,14 +38,17 @@ export function torTransport(options = {}) {
       dialOptions.onProgress?.(new CustomProgressEvent('tor:open-connection'))
 
       // Parse /onion3/<52-char-base32>:<port>
-      const comps = ma.getComponents()
+            const comps = ma.getComponents()
       const onionComp = comps.find((c) => c.name === 'onion3')
       if (!onionComp) {
         throw new Error(`invalid onion3 multiaddr: ${ma}`)
       }
-      const portComp = comps.find((c) => c.name === 'tcp')
-      const port = portComp ? Number(portComp.value) : 4001
-      const host = `${onionComp.value}.onion`
+      // The onion3 component value is "<base32-pubkey>:<port>" - the port is
+      // encoded inside the component itself, not as a separate /tcp/ component.
+      const rawValue = String(onionComp.value)
+      const [onionKey, embeddedPort] = rawValue.split(':')
+      const port = Number(embeddedPort) || 4001
+      const host = `${onionKey}.onion`
 
       log('dialing %s:%d via SOCKS5 %s:%d', host, port, socksHost, socksPort)
 
