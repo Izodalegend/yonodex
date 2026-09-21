@@ -340,3 +340,220 @@ pub fn load_node_identity(db: &DbHandle) -> Result<Option<String>, DbError> {
 
     Ok(row)
 }
+
+// ---- Order nonce tracking (replay protection) ----
+// Whitepaper Layer 5, Section 7.1: nonce-based replay prevention.
+
+/// Get the last seen nonce for an owner. Returns 0 if never seen.
+pub fn get_last_nonce(db: &DbHandle, owner: &str) -> Result<u64, DbError> {
+    let mut stmt = db
+        .conn
+        .prepare("SELECT last_nonce FROM order_nonces WHERE owner = ?1")
+        .map_err(|e| DbError::Sqlite(e.to_string()))?;
+
+    let result = stmt
+        .query_row(rusqlite::params![owner], |r| r.get::<_, i64>(0))
+        .ok();
+
+    Ok(result.unwrap_or(0) as u64)
+}
+
+/// Update the last seen nonce for an owner.
+/// Only advances forward — will not accept a smaller value than what's stored.
+pub fn set_last_nonce(db: &DbHandle, owner: &str, nonce: u64) -> Result<(), DbError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    db.conn
+        .execute(
+            "INSERT INTO order_nonces (owner, last_nonce, updated_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(owner) DO UPDATE SET
+                last_nonce = MAX(excluded.last_nonce, order_nonces.last_nonce),
+                updated_at = excluded.updated_at",
+            rusqlite::params![owner, nonce as i64, now],
+        )
+        .map_err(|e| DbError::Sqlite(e.to_string()))?;
+
+    Ok(())
+}
+
+/// Check whether an incoming order's nonce is valid (strictly greater than last seen).
+/// Returns Err if the nonce was already used (replay attack).
+pub fn check_nonce(db: &DbHandle, owner: &str, nonce: u64) -> Result<(), DbError> {
+    let last = get_last_nonce(db, owner)?;
+    if nonce <= last {
+        return Err(DbError::Sqlite(format!(
+            "replay detected: nonce {} <= last seen {} for owner {}",
+            nonce, last, owner
+        )));
+    }
+    Ok(())
+}
+
+// ---- Order persistence ----
+// Whitepaper Layer 5, Section 7.1: orders replicated via CRDT,
+// persisted to encrypted DB so they survive restarts.
+
+/// Save or update an order in the order_cache table.
+/// Serializes the full Order struct to JSON for storage.
+pub fn save_order(db: &DbHandle, order: &crate::order::Order, tombstone: Option<&str>, tombstoned_at: Option<i64>) -> Result<(), DbError> {
+    let order_json = serde_json::to_string(order)
+        .map_err(|e| DbError::Sqlite(format!("order serialize: {e}")))?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    db.conn
+        .execute(
+            "INSERT INTO order_cache
+                (order_id, pair, side, price, amount, owner, timestamp, order_json, tombstone, tombstoned_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(order_id) DO UPDATE SET
+                tombstone = excluded.tombstone,
+                tombstoned_at = excluded.tombstoned_at,
+                order_json = excluded.order_json",
+            rusqlite::params![
+                order.id,
+                order.pair,
+                order.side.as_str(),
+                order.price,
+                order.amount,
+                order.owner,
+                now,
+                order_json,
+                tombstone,
+                tombstoned_at,
+            ],
+        )
+        .map_err(|e| DbError::Sqlite(e.to_string()))?;
+
+    Ok(())
+}
+
+/// Load all orders from the DB. Returns (Order, tombstone, tombstoned_at).
+pub fn load_all_orders(
+    db: &DbHandle,
+) -> Result<Vec<(crate::order::Order, Option<String>, Option<i64>)>, DbError> {
+    let mut stmt = db
+        .conn
+        .prepare(
+            "SELECT order_json, tombstone, tombstoned_at
+             FROM order_cache
+             ORDER BY timestamp ASC",
+        )
+        .map_err(|e| DbError::Sqlite(e.to_string()))?;
+
+    let rows = stmt
+        .query_map([], |r| {
+            let json: String = r.get(0)?;
+            let tombstone: Option<String> = r.get(1)?;
+            let tombstoned_at: Option<i64> = r.get(2)?;
+            Ok((json, tombstone, tombstoned_at))
+        })
+        .map_err(|e| DbError::Sqlite(e.to_string()))?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        let (json, tombstone, tombstoned_at) =
+            row.map_err(|e| DbError::Sqlite(e.to_string()))?;
+        let order: crate::order::Order = serde_json::from_str(&json)
+            .map_err(|e| DbError::Sqlite(format!("order deserialize: {e}")))?;
+        out.push((order, tombstone, tombstoned_at));
+    }
+
+    Ok(out)
+}
+
+/// Delete a single order by id (used by GC).
+pub fn delete_order(db: &DbHandle, order_id: &str) -> Result<(), DbError> {
+    db.conn
+        .execute(
+            "DELETE FROM order_cache WHERE order_id = ?1",
+            rusqlite::params![order_id],
+        )
+        .map_err(|e| DbError::Sqlite(e.to_string()))?;
+    Ok(())
+}
+
+/// Purge tombstones older than the retention window.
+/// Returns the number of rows deleted.
+pub fn purge_old_tombstones(db: &DbHandle, retention_secs: i64) -> Result<usize, DbError> {
+    let cutoff = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+        - retention_secs;
+
+    let affected = db
+        .conn
+        .execute(
+            "DELETE FROM order_cache
+             WHERE tombstone IS NOT NULL AND tombstoned_at IS NOT NULL AND tombstoned_at < ?1",
+            rusqlite::params![cutoff],
+        )
+        .map_err(|e| DbError::Sqlite(e.to_string()))?;
+
+    Ok(affected)
+}
+
+// ---- Signing identity (Ed25519 keypair for order signing) ----
+// Whitepaper Layer 5, Section 7.1: orders signed by creator.
+// Whitepaper Layer 3, Section 5.2: private keys stay in encrypted DB.
+
+/// Generate a fresh random Ed25519 keypair and store it as the signing identity.
+/// Idempotent — if an identity already exists, does nothing and returns it.
+///
+/// Returns (owner_hex, private_hex).
+pub fn ensure_signing_identity(db: &DbHandle) -> Result<(String, String), DbError> {
+    // If one already exists, return it
+    if let Some(existing) = load_signing_identity(db)? {
+        return Ok(existing);
+    }
+
+        // Generate 32 random bytes with our existing rand 0.9, then construct
+    // the Ed25519 key from those bytes. Avoids rand_core version conflicts
+    // between rand 0.9 and ed25519-dalek's internal rand_core 0.6.
+    let mut secret_bytes = [0u8; 32];
+    rand::RngCore::fill_bytes(&mut rand::rng(), &mut secret_bytes);
+    let signing_key = ed25519_dalek::SigningKey::from_bytes(&secret_bytes);
+
+    let owner_hex = hex::encode(signing_key.verifying_key().to_bytes());
+    let private_hex = hex::encode(signing_key.to_bytes());
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    db.conn
+        .execute(
+            "INSERT INTO signing_identity
+                (id, scheme, owner_hex, private_hex, derived_from, created_at)
+             VALUES (1, ?1, ?2, ?3, NULL, ?4)",
+            rusqlite::params!["random_v1", owner_hex, private_hex, now],
+        )
+        .map_err(|e| DbError::Sqlite(e.to_string()))?;
+
+    Ok((owner_hex, private_hex))
+}
+
+/// Load the stored signing identity if present. Returns (owner_hex, private_hex).
+pub fn load_signing_identity(db: &DbHandle) -> Result<Option<(String, String)>, DbError> {
+    let mut stmt = db
+        .conn
+        .prepare("SELECT owner_hex, private_hex FROM signing_identity WHERE id = 1")
+        .map_err(|e| DbError::Sqlite(e.to_string()))?;
+
+    let row = stmt
+        .query_row([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
+        .ok();
+
+    Ok(row)
+}

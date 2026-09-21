@@ -1,9 +1,14 @@
+mod clock;
 mod commands;
 mod crypto;
 mod db;
+mod order;
+mod orderbook;
+mod relay;
 mod tor;
 
 use commands::AppState;
+use relay::RelayState;
 use tauri::Manager;
 use tor::TorState;
 
@@ -13,10 +18,8 @@ pub fn run() {
         .plugin(tauri_plugin_http::init())
         .manage(AppState::new())
         .manage(TorState::new())
+        .manage(RelayState::new())
         .invoke_handler(tauri::generate_handler![
-            commands::save_node_identity,
-            commands::load_node_identity,
-            commands::debug_dump_node_identity,
             commands::db_is_unlocked,
             commands::db_is_initialized,
             commands::unlock_db,
@@ -30,6 +33,14 @@ pub fn run() {
             commands::save_password_hint,
             commands::load_password_hint,
             commands::reset_local_data,
+            commands::save_node_identity,
+            commands::load_node_identity,
+            commands::debug_dump_node_identity,
+            commands::order_create,
+            commands::order_cancel,
+            commands::order_list,
+            commands::order_apply_remote,
+            commands::order_book_stats,
             tor::tor_start,
             tor::tor_stop,
             tor::tor_is_running,

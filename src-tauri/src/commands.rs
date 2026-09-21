@@ -1,22 +1,27 @@
 // Yonodex Desktop Client - Tauri Commands
 // Whitepaper Layer 3, Section 5.2: encrypted DB access from the Svelte frontend
-//
-// All DB operations are exposed as Tauri commands. State is held in
-// `AppState` and the encrypted handle stays in memory only while unlocked.
+// Whitepaper Layer 5, Section 7.1: order book operations
 
 use crate::db::{self, DbHandle};
+use crate::order::{Order, Side};
+use crate::orderbook::OrderBook;
+use ed25519_dalek::SigningKey;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::{Manager, State};
 
 pub struct AppState {
     pub db: Mutex<Option<DbHandle>>,
+    pub book: Mutex<Option<OrderBook>>,
+    pub signing_key: Mutex<Option<SigningKey>>,
 }
 
 impl AppState {
     pub fn new() -> Self {
         Self {
             db: Mutex::new(None),
+            book: Mutex::new(None),
+            signing_key: Mutex::new(None),
         }
     }
 }
@@ -44,6 +49,61 @@ pub struct WalletConfigPayload {
     pub wallet_name: String,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct OrderPayload {
+    pub id: String,
+    pub owner: String,
+    pub side: String,
+    pub pair: String,
+    pub price: String,
+    pub amount: String,
+    pub expiry: i64,
+    pub nonce: u64,
+    pub signature: String,
+    pub vector_clock: std::collections::HashMap<String, u64>,
+}
+
+impl From<&Order> for OrderPayload {
+    fn from(o: &Order) -> Self {
+        Self {
+            id: o.id.clone(),
+            owner: o.owner.clone(),
+            side: o.side.as_str().to_string(),
+            pair: o.pair.clone(),
+            price: o.price.clone(),
+            amount: o.amount.clone(),
+            expiry: o.expiry,
+            nonce: o.nonce,
+            signature: o.signature.clone(),
+            vector_clock: o.vector_clock.clone(),
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+pub struct BookStats {
+    pub local_peer: String,
+    pub live_count: usize,
+    pub total_count: usize,
+}
+
+#[derive(serde::Serialize)]
+pub struct TradeRecordPayload {
+    pub id: i64,
+    pub wallet_address: String,
+    pub tx_hash: Option<String>,
+    pub chain_id: String,
+    pub pair: String,
+    pub side: String,
+    pub amount_in: String,
+    pub amount_out: String,
+    pub token_in: String,
+    pub token_out: String,
+    pub status: String,
+    pub timestamp: i64,
+    pub notes: Option<String>,
+}
+
 #[tauri::command]
 pub fn db_is_unlocked(state: State<'_, AppState>) -> bool {
     state.db.lock().map(|g| g.is_some()).unwrap_or(false)
@@ -69,15 +129,67 @@ pub async fn unlock_db(
     .await
     .map_err(|e| format!("join error: {e}"))??;
 
-    let mut guard = state.db.lock().map_err(|e| e.to_string())?;
-    *guard = Some(handle);
+    let (owner_hex, private_hex) =
+        db::ensure_signing_identity(&handle).map_err(|e| e.to_string())?;
+
+    let mut key_bytes = [0u8; 32];
+    let decoded = hex::decode(&private_hex).map_err(|e| e.to_string())?;
+    if decoded.len() != 32 {
+        return Err(format!("stored key has wrong length: {}", decoded.len()));
+    }
+    key_bytes.copy_from_slice(&decoded);
+    let signing_key = SigningKey::from_bytes(&key_bytes);
+
+    let mut book = OrderBook::new(owner_hex.clone());
+    let persisted = db::load_all_orders(&handle).map_err(|e| e.to_string())?;
+    for (order, tombstone, tombstoned_at) in persisted {
+        book.restore_persisted(order, tombstone, tombstoned_at);
+    }
+
+    {
+        let mut db_guard = state.db.lock().map_err(|e| e.to_string())?;
+        *db_guard = Some(handle);
+    }
+    {
+        let mut key_guard = state.signing_key.lock().map_err(|e| e.to_string())?;
+        *key_guard = Some(signing_key);
+    }
+    {
+        let mut book_guard = state.book.lock().map_err(|e| e.to_string())?;
+        *book_guard = Some(book);
+    }
+
+    // Spawn the Node.js relay sidecar (transport for the order book).
+    // Non-fatal: if the relay fails to start, the local order book still works.
+    if let Err(e) = crate::relay::spawn(app.clone()).await {
+        log::error!("relay spawn failed: {e}");
+    }
+
     Ok(())
 }
 
 #[tauri::command]
-pub fn lock_db(state: State<'_, AppState>) -> Result<(), String> {
-    let mut guard = state.db.lock().map_err(|e| e.to_string())?;
-    *guard = None;
+pub async fn lock_db(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    // Stop the relay first so it doesn't try to write to a locked DB
+    if let Err(e) = crate::relay::stop(app).await {
+        log::error!("relay stop failed: {e}");
+    }
+
+    {
+        let mut guard = state.db.lock().map_err(|e| e.to_string())?;
+        *guard = None;
+    }
+    {
+        let mut guard = state.book.lock().map_err(|e| e.to_string())?;
+        *guard = None;
+    }
+    {
+        let mut guard = state.signing_key.lock().map_err(|e| e.to_string())?;
+        *guard = None;
+    }
     Ok(())
 }
 
@@ -140,27 +252,16 @@ pub fn reset_local_data(
         let mut guard = state.db.lock().map_err(|e| e.to_string())?;
         *guard = None;
     }
+    {
+        let mut guard = state.book.lock().map_err(|e| e.to_string())?;
+        *guard = None;
+    }
+    {
+        let mut guard = state.signing_key.lock().map_err(|e| e.to_string())?;
+        *guard = None;
+    }
     let path = db_path(&app)?;
     db::reset_all(&path).map_err(|e| e.to_string())
-}
-
-// ---- Trade history (scoped per wallet) ----
-
-#[derive(serde::Serialize)]
-pub struct TradeRecordPayload {
-    pub id: i64,
-    pub wallet_address: String,
-    pub tx_hash: Option<String>,
-    pub chain_id: String,
-    pub pair: String,
-    pub side: String,
-    pub amount_in: String,
-    pub amount_out: String,
-    pub token_in: String,
-    pub token_out: String,
-    pub status: String,
-    pub timestamp: i64,
-    pub notes: Option<String>,
 }
 
 #[tauri::command]
@@ -235,8 +336,6 @@ pub fn delete_trade(state: State<'_, AppState>, id: i64) -> Result<(), String> {
     db::delete_trade(db, id).map_err(|e| e.to_string())
 }
 
-// ---- Node identity (Tor .onion address) ----
-
 #[tauri::command]
 pub fn save_node_identity(
     state: State<'_, AppState>,
@@ -254,7 +353,6 @@ pub fn load_node_identity(state: State<'_, AppState>) -> Result<Option<String>, 
     db::load_node_identity(db).map_err(|e| e.to_string())
 }
 
-// Debug-only: dump the node_identity table for verification.
 #[tauri::command]
 pub fn debug_dump_node_identity(
     state: State<'_, AppState>,
@@ -262,4 +360,126 @@ pub fn debug_dump_node_identity(
     let guard = state.db.lock().map_err(|e| e.to_string())?;
     let db = guard.as_ref().ok_or("database is locked")?;
     db::load_node_identity(db).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn order_create(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    side: String,
+    pair: String,
+    price: String,
+    amount: String,
+    expiry: i64,
+) -> Result<OrderPayload, String> {
+    let side_enum = match side.to_lowercase().as_str() {
+        "buy" => Side::Buy,
+        "sell" => Side::Sell,
+        _ => return Err(format!("invalid side: {side}")),
+    };
+
+    let created = {
+        let db_guard = state.db.lock().map_err(|e| e.to_string())?;
+        let db = db_guard.as_ref().ok_or("database is locked")?;
+        let key_guard = state.signing_key.lock().map_err(|e| e.to_string())?;
+        let key = key_guard.as_ref().ok_or("signing key not loaded")?;
+        let mut book_guard = state.book.lock().map_err(|e| e.to_string())?;
+        let book = book_guard.as_mut().ok_or("order book not loaded")?;
+
+        let owner = book.local_peer().to_string();
+        let order = book
+            .create_local(db, key, &owner, side_enum, &pair, &price, &amount, expiry)?;
+
+        db::save_order(db, &order, None, None).map_err(|e| e.to_string())?;
+
+        order
+    };
+
+    // Publish to the P2P network via relay (non-fatal if relay is down)
+    let payload = serde_json::to_value(&created).map_err(|e| e.to_string())?;
+    if let Err(e) = crate::relay::send(
+        &app,
+        serde_json::json!({ "type": "publish_order", "order": payload }),
+    )
+    .await
+    {
+        log::warn!("relay publish failed (non-fatal): {e}");
+    }
+
+    Ok(OrderPayload::from(&created))
+}
+
+#[tauri::command]
+pub fn order_cancel(state: State<'_, AppState>, order_id: String) -> Result<(), String> {
+    let db_guard = state.db.lock().map_err(|e| e.to_string())?;
+    let db = db_guard.as_ref().ok_or("database is locked")?;
+    let mut book_guard = state.book.lock().map_err(|e| e.to_string())?;
+    let book = book_guard.as_mut().ok_or("order book not loaded")?;
+
+    book.cancel_local(&order_id)?;
+
+    if let Some(entry) = book.get(&order_id) {
+        let tombstone_str = entry.tombstone.map(|t| match t {
+            crate::orderbook::TombstoneKind::Cancelled => "Cancelled",
+            crate::orderbook::TombstoneKind::Filled => "Filled",
+        });
+        db::save_order(db, &entry.order, tombstone_str, entry.tombstoned_at)
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn order_list(state: State<'_, AppState>) -> Result<Vec<OrderPayload>, String> {
+    let book_guard = state.book.lock().map_err(|e| e.to_string())?;
+    let book = book_guard.as_ref().ok_or("order book not loaded")?;
+    Ok(book.live_orders().map(OrderPayload::from).collect())
+}
+
+#[tauri::command]
+pub fn order_apply_remote(
+    state: State<'_, AppState>,
+    order: OrderPayload,
+) -> Result<(), String> {
+    let side_enum = match order.side.to_lowercase().as_str() {
+        "buy" => Side::Buy,
+        "sell" => Side::Sell,
+        _ => return Err(format!("invalid side: {}", order.side)),
+    };
+
+    let incoming = Order {
+        id: order.id,
+        owner: order.owner,
+        side: side_enum,
+        pair: order.pair,
+        price: order.price,
+        amount: order.amount,
+        expiry: order.expiry,
+        nonce: order.nonce,
+        signature: order.signature,
+        vector_clock: order.vector_clock,
+    };
+
+    let db_guard = state.db.lock().map_err(|e| e.to_string())?;
+    let db = db_guard.as_ref().ok_or("database is locked")?;
+    let mut book_guard = state.book.lock().map_err(|e| e.to_string())?;
+    let book = book_guard.as_mut().ok_or("order book not loaded")?;
+
+    book.apply_remote(db, incoming.clone())?;
+
+    db::save_order(db, &incoming, None, None).map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn order_book_stats(state: State<'_, AppState>) -> Result<BookStats, String> {
+    let book_guard = state.book.lock().map_err(|e| e.to_string())?;
+    let book = book_guard.as_ref().ok_or("order book not loaded")?;
+    Ok(BookStats {
+        local_peer: book.local_peer().to_string(),
+        live_count: book.live_count(),
+        total_count: book.total_count(),
+    })
 }

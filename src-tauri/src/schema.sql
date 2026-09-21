@@ -72,18 +72,26 @@ CREATE TABLE IF NOT EXISTS peer_cache (
 CREATE INDEX IF NOT EXISTS idx_peer_cache_last_seen
     ON peer_cache(last_seen DESC);
 
--- Order book cache (populated once protocol layer is live)
--- Whitepaper Layer 3, Section 5.2: last 1000 orders per market, auto-pruned.
+-- Order cache — full CRDT order state
+-- Whitepaper Layer 5, Section 7.1: orders persisted so they survive restarts.
+-- The authoritative store is `order_json` (serialized Order struct).
+-- The other columns are denormalized for querying/indexing.
 CREATE TABLE IF NOT EXISTS order_cache (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    order_id        TEXT UNIQUE NOT NULL,
+    order_id        TEXT PRIMARY KEY,
     pair            TEXT NOT NULL,
     side            TEXT NOT NULL CHECK (side IN ('buy', 'sell')),
     price           TEXT NOT NULL,
     amount          TEXT NOT NULL,
     owner           TEXT NOT NULL,
-    timestamp       INTEGER NOT NULL
+    timestamp       INTEGER NOT NULL,
+    order_json      TEXT NOT NULL,
+    tombstone       TEXT,
+    tombstoned_at   INTEGER
 );
+
+CREATE INDEX IF NOT EXISTS idx_order_cache_live
+    ON order_cache(pair, side, timestamp DESC)
+    WHERE tombstone IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_order_cache_pair_timestamp
     ON order_cache(pair, timestamp DESC);
@@ -98,3 +106,33 @@ CREATE TABLE IF NOT EXISTS settings (
 -- Initialize schema version on first run
 INSERT OR IGNORE INTO schema_meta (id, version, created_at, updated_at)
 VALUES (1, 1, strftime('%s', 'now'), strftime('%s', 'now'));
+
+-- Per-owner nonce tracking for replay protection.
+-- Whitepaper Layer 5, Section 7.1: nonce-based replay prevention.
+-- Each owner has a monotonically increasing nonce; any order with a
+-- nonce <= the last seen nonce for that owner is rejected.
+CREATE TABLE IF NOT EXISTS order_nonces (
+    owner           TEXT PRIMARY KEY,
+    last_nonce      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL
+);
+
+-- Signing identity — Ed25519 keypair used to sign orders.
+-- Whitepaper Layer 5, Section 7.1: orders are signed by their creator.
+-- Whitepaper Layer 3, Section 5.2: private keys never leave the encrypted DB.
+--
+-- Single row (id=1) - the node has exactly one active signing identity.
+--
+-- `scheme` allows future migration without breaking existing orders:
+--   - 'random_v1' : random keypair generated on first unlock (current)
+--   - 'derived_v1': deterministically derived from password + wallet (future)
+-- Old orders signed under a previous scheme remain valid forever -
+-- verification only checks pubkey + signature, not generation method.
+CREATE TABLE IF NOT EXISTS signing_identity (
+    id              INTEGER PRIMARY KEY CHECK (id = 1),
+    scheme          TEXT NOT NULL,
+    owner_hex       TEXT NOT NULL,
+    private_hex     TEXT NOT NULL,
+    derived_from    TEXT,
+    created_at      INTEGER NOT NULL
+);

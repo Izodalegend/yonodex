@@ -28,3 +28,5 @@ rusqlite = { version = "0.40.2", features = ["bundled-sqlcipher", "bundled-sqlci
 argon2 = "0.5.3"
 rand = "0.9.5"
 hex = "0.4.3"
+ed25519-dalek = { version = "2.1.1", features = ["rand_core"] }
+tokio = { version = "1.53.1", features = ["full"] }

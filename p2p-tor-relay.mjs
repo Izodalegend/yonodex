@@ -1,10 +1,18 @@
 // Yonodex Desktop Client - Tor-enabled libp2p relay
 // Whitepaper Layer 4, Section 6.1: Tor Onion Transport
+// Whitepaper Layer 5, Section 7.1: Order book lives in Rust - Node.js is transport only
 //
 // CLI arguments:
 //   --listen-port <port>   Local port to bind (default 4001)
 //   --dial <multiaddr>     Peer multiaddr to dial on startup
 //   --no-onion             Don't read .onion or advertise (dialer-only mode)
+//
+// IPC (Rust <-> Node.js):
+//   stdin  (Rust -> Node): {"type":"publish_order", "order": {...}}
+//                          {"type":"publish_cancel", "order_id":"...","vector_clock":{},"remote_peer":"..."}
+//   stdout (Node -> Rust): {"type":"order_received", "order": {...}}
+//                          {"type":"cancel_received", "order_id":"...","vector_clock":{},"remote_peer":"..."}
+//                          {"type":"status", "ready":true, "peer_count":N}
 
 import { createLibp2p } from 'libp2p'
 import { noise } from '@chainsafe/libp2p-noise'
@@ -17,6 +25,14 @@ import { torTransport } from './p2p-tor-transport.mjs'
 import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+
+// ---- Redirect console.log/error to stderr so stdout is IPC-only ----
+// The Rust reader on the other end parses every stdout line as JSON.
+// Any stray console.log on stdout would break IPC.
+const _logWrite = (...args) =>
+  process.stderr.write(args.map((a) => String(a)).join(' ') + '\n')
+console.log = _logWrite
+console.error = _logWrite
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ONION_HOSTNAME_PATH = join(
@@ -31,6 +47,39 @@ const ONION_HOSTNAME_PATH = join(
 
 const TOPIC_ORDERS = 'yonodex-orders'
 const orders = []
+
+// ---- IPC helpers ----
+function ipcWrite(msg) {
+  process.stdout.write(JSON.stringify(msg) + '\n')
+}
+
+function startIpcReader(onPublishOrder, onPublishCancel) {
+  let buffer = ''
+  process.stdin.setEncoding('utf8')
+  process.stdin.on('data', (chunk) => {
+    buffer += chunk
+    let idx
+    while ((idx = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, idx).trim()
+      buffer = buffer.slice(idx + 1)
+      if (!line) continue
+      try {
+        const msg = JSON.parse(line)
+        if (msg.type === 'publish_order') {
+          onPublishOrder(msg.order)
+        } else if (msg.type === 'publish_cancel') {
+          onPublishCancel(msg.order_id, msg.vector_clock, msg.remote_peer)
+        }
+      } catch (err) {
+        console.error('[ipc] bad message:', err.message)
+      }
+    }
+  })
+  process.stdin.on('end', () => {
+    console.log('[ipc] stdin closed - shutting down')
+    process.exit(0)
+  })
+}
 
 // ---- CLI parsing ----
 function parseArgs(argv) {
@@ -73,7 +122,6 @@ async function startTorRelay() {
 
   if (!args.noOnion) {
     onionAddress = await readOwnOnionAddress()
-    // libp2p multiaddr format expects the bare base32 pubkey (no .onion suffix)
     const onionKey = onionAddress.replace(/\.onion$/, '')
     announceMultiaddr = `/onion3/${onionKey}:${args.listenPort}`
     console.log(`🔑 Our .onion address: ${onionAddress}`)
@@ -101,9 +149,7 @@ async function startTorRelay() {
     connectionEncrypters: [noise()],
     streamMuxers: [mplex()],
     connectionManager: {
-      // Hidden service rendezvous needs 30-90s. Default is 10s.
       dialTimeout: 180_000,
-      // Try to maintain at least 1 connection.
       minConnections: 1,
     },
     services: {
@@ -118,7 +164,6 @@ async function startTorRelay() {
   }
 
   const node = await createLibp2p(nodeConfig)
-
   await node.start()
 
   console.log('✅ Tor-enabled P2P relay started')
@@ -130,6 +175,54 @@ async function startTorRelay() {
 
   await node.services.pubsub.subscribe(TOPIC_ORDERS)
   console.log(`📡 Subscribed to topic: ${TOPIC_ORDERS}`)
+
+  // ---- Wire Rust <-> gossipsub ----
+  startIpcReader(
+    (order) => {
+      const data = Buffer.from(JSON.stringify({ kind: 'order', order }))
+      node.services.pubsub.publish(TOPIC_ORDERS, data)
+      console.log(`[ipc] published order ${order.id}`)
+    },
+    (orderId, vectorClock, remotePeer) => {
+      const data = Buffer.from(
+        JSON.stringify({
+          kind: 'cancel',
+          order_id: orderId,
+          vector_clock: vectorClock,
+          remote_peer: remotePeer,
+        })
+      )
+      node.services.pubsub.publish(TOPIC_ORDERS, data)
+      console.log(`[ipc] published cancel for ${orderId}`)
+    }
+  )
+
+  // Notify Rust we're ready
+  ipcWrite({ type: 'status', ready: true, peer_count: 0 })
+
+  // ---- Handle incoming orders/cancels from gossipsub ----
+  node.services.pubsub.addEventListener('message', (evt) => {
+    if (evt.detail.topic !== TOPIC_ORDERS) return
+    try {
+      const msg = JSON.parse(evt.detail.data.toString())
+
+      if (msg.kind === 'order') {
+        console.log('📦 order_received:', msg.order.id)
+        orders.push(msg.order)
+        ipcWrite({ type: 'order_received', order: msg.order })
+      } else if (msg.kind === 'cancel') {
+        console.log('📦 cancel_received:', msg.order_id)
+        ipcWrite({
+          type: 'cancel_received',
+          order_id: msg.order_id,
+          vector_clock: msg.vector_clock,
+          remote_peer: msg.remote_peer,
+        })
+      }
+    } catch (e) {
+      console.error('Invalid message:', e.message)
+    }
+  })
 
   // ---- Dial with exponential backoff retry ----
   async function dialWithRetry(dialMa, label = 'dial') {
@@ -146,12 +239,10 @@ async function startTorRelay() {
       } catch (err) {
         const elapsed = Date.now() - startedAt
         console.error(`❌ ${label} attempt ${attempt} failed after ${elapsed}ms: ${err.message}`)
-
         if (attempt === maxAttempts) {
           console.error(`❌ ${label}: all attempts exhausted.`)
           return false
         }
-
         const waitMs = Math.min(baseBackoffMs * Math.pow(2, attempt - 1), 60_000)
         console.log(`⏳ Waiting ${waitMs / 1000}s before next attempt...`)
         await new Promise((r) => setTimeout(r, waitMs))
@@ -160,23 +251,19 @@ async function startTorRelay() {
     return false
   }
 
-  // ---- Initial dial + auto-reconnect ----
+  // ---- Auto-reconnect ----
   if (args.dial) {
     const dialMa = multiaddr(args.dial)
     await dialWithRetry(dialMa, 'initial-dial')
 
-    // If the peer disconnects, dial again after a short delay.
-    // Whitepaper Layer 4, Section 6.5: peers maintain persistent connectivity.
     let reconnecting = false
     node.addEventListener('peer:disconnect', (evt) => {
       const peer = evt.detail
       console.log(`🔌 Peer disconnected: ${peer.toString()}`)
-
       if (reconnecting) {
         console.log('   (reconnect already in progress, skipping)')
         return
       }
-
       reconnecting = true
       setTimeout(async () => {
         console.log(`♻️  Reconnecting to ${dialMa.toString()}`)
@@ -191,44 +278,16 @@ async function startTorRelay() {
     })
   }
 
-  // ---- Log peer connections ----
+  // ---- Peer connection logging ----
   node.addEventListener('peer:connect', (evt) => {
     console.log(`🔗 Peer connected: ${evt.detail.toString()}`)
   })
 
-  // ---- Handle incoming orders ----
-  node.services.pubsub.addEventListener('message', (evt) => {
-    if (evt.detail.topic !== TOPIC_ORDERS) return
-    try {
-      const order = JSON.parse(evt.detail.data.toString())
-      console.log('📦 Order received:', order)
-      orders.push(order)
-    } catch (e) {
-      console.error('Invalid order:', e.message)
-    }
-  })
-
-  // ---- Publish a test order every 30s (dev only) ----
-  setInterval(() => {
-    const testOrder = {
-      id: Date.now(),
-      peerId: node.peerId.toString(),
-      pair: 'ETH/USDC',
-      side: 'buy',
-      price: (1800 + Math.random() * 50).toFixed(2),
-      amount: (0.1 + Math.random() * 0.5).toFixed(2),
-      timestamp: new Date().toISOString(),
-    }
-    const data = Buffer.from(JSON.stringify(testOrder))
-    node.services.pubsub.publish(TOPIC_ORDERS, data)
-    console.log('📤 Published test order:', testOrder)
-  }, 30_000)
-
-  // ---- Stats every minute ----
+  // ---- Periodic status to Rust ----
   setInterval(() => {
     const peers = node.getPeers().map((p) => p.toString())
-    console.log(`📊 Total orders: ${orders.length} | Peers: ${peers.length} [${peers.join(', ')}]`)
-  }, 60_000)
+    ipcWrite({ type: 'status', ready: true, peer_count: peers.length })
+  }, 15_000)
 
   return node
 }
