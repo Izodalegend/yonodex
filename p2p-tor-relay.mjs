@@ -11,6 +11,7 @@ import { noise } from '@chainsafe/libp2p-noise'
 import { mplex } from '@libp2p/mplex'
 import { gossipsub } from '@libp2p/gossipsub'
 import { identify } from '@libp2p/identify'
+import { ping } from '@libp2p/ping'
 import { multiaddr } from '@multiformats/multiaddr'
 import { torTransport } from './p2p-tor-transport.mjs'
 import { readFile } from 'node:fs/promises'
@@ -99,13 +100,16 @@ async function startTorRelay() {
     ],
     connectionEncrypters: [noise()],
     streamMuxers: [mplex()],
-    // Hidden service rendezvous needs 30-90s. Default is 10s.
     connectionManager: {
+      // Hidden service rendezvous needs 30-90s. Default is 10s.
       dialTimeout: 180_000,
+      // Try to maintain at least 1 connection.
+      minConnections: 1,
     },
     services: {
       pubsub,
       identify: identify(),
+      ping: ping(),
     },
   }
 
@@ -127,27 +131,72 @@ async function startTorRelay() {
   await node.services.pubsub.subscribe(TOPIC_ORDERS)
   console.log(`📡 Subscribed to topic: ${TOPIC_ORDERS}`)
 
-  // Dial peer if provided
-  if (args.dial) {
-    try {
-      const dialMa = multiaddr(args.dial)
-      console.log(`🎯 Dialing peer: ${dialMa.toString()}`)
-      const conn = await node.dial(dialMa)
-      console.log(`🔗 Connected to peer: ${conn.remotePeer.toString()}`)
-    } catch (err) {
-      console.error(`❌ Dial failed: ${err.message}`)
+  // ---- Dial with exponential backoff retry ----
+  async function dialWithRetry(dialMa, label = 'dial') {
+    const maxAttempts = 5
+    const baseBackoffMs = 5_000
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const startedAt = Date.now()
+      try {
+        console.log(`🎯 ${label} attempt ${attempt}/${maxAttempts}: ${dialMa.toString()}`)
+        const conn = await node.dial(dialMa)
+        console.log(`🔗 Connected to peer in ${Date.now() - startedAt}ms: ${conn.remotePeer.toString()}`)
+        return true
+      } catch (err) {
+        const elapsed = Date.now() - startedAt
+        console.error(`❌ ${label} attempt ${attempt} failed after ${elapsed}ms: ${err.message}`)
+
+        if (attempt === maxAttempts) {
+          console.error(`❌ ${label}: all attempts exhausted.`)
+          return false
+        }
+
+        const waitMs = Math.min(baseBackoffMs * Math.pow(2, attempt - 1), 60_000)
+        console.log(`⏳ Waiting ${waitMs / 1000}s before next attempt...`)
+        await new Promise((r) => setTimeout(r, waitMs))
+      }
     }
+    return false
   }
 
-  // Log peer connections
+  // ---- Initial dial + auto-reconnect ----
+  if (args.dial) {
+    const dialMa = multiaddr(args.dial)
+    await dialWithRetry(dialMa, 'initial-dial')
+
+    // If the peer disconnects, dial again after a short delay.
+    // Whitepaper Layer 4, Section 6.5: peers maintain persistent connectivity.
+    let reconnecting = false
+    node.addEventListener('peer:disconnect', (evt) => {
+      const peer = evt.detail
+      console.log(`🔌 Peer disconnected: ${peer.toString()}`)
+
+      if (reconnecting) {
+        console.log('   (reconnect already in progress, skipping)')
+        return
+      }
+
+      reconnecting = true
+      setTimeout(async () => {
+        console.log(`♻️  Reconnecting to ${dialMa.toString()}`)
+        try {
+          await dialWithRetry(dialMa, 'reconnect')
+        } catch (err) {
+          console.error('Reconnect loop failed:', err.message)
+        } finally {
+          reconnecting = false
+        }
+      }, 10_000)
+    })
+  }
+
+  // ---- Log peer connections ----
   node.addEventListener('peer:connect', (evt) => {
     console.log(`🔗 Peer connected: ${evt.detail.toString()}`)
   })
-  node.addEventListener('peer:disconnect', (evt) => {
-    console.log(`🔌 Peer disconnected: ${evt.detail.toString()}`)
-  })
 
-  // Handle incoming orders
+  // ---- Handle incoming orders ----
   node.services.pubsub.addEventListener('message', (evt) => {
     if (evt.detail.topic !== TOPIC_ORDERS) return
     try {
@@ -159,7 +208,7 @@ async function startTorRelay() {
     }
   })
 
-  // Publish a test order every 30s
+  // ---- Publish a test order every 30s (dev only) ----
   setInterval(() => {
     const testOrder = {
       id: Date.now(),
@@ -175,6 +224,7 @@ async function startTorRelay() {
     console.log('📤 Published test order:', testOrder)
   }, 30_000)
 
+  // ---- Stats every minute ----
   setInterval(() => {
     const peers = node.getPeers().map((p) => p.toString())
     console.log(`📊 Total orders: ${orders.length} | Peers: ${peers.length} [${peers.join(', ')}]`)
