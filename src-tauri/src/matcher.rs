@@ -66,9 +66,9 @@ pub fn find_matches(book: &mut OrderBook) -> Result<Vec<Trade>, String> {
         pa.cmp(&pb).then_with(|| a.id.cmp(&b.id))
     });
 
-    // Capture the clock once; all trades in this batch share the same
-    // proposal moment. Ticks happen when orders are tombstoned below.
-    let clock_at_start = book.clock().clone();
+    // Do NOT use the local book clock here — it differs between peers.
+    // Each trade's clock is derived from the two orders being matched,
+    // so all peers compute identical bytes and signatures validate.
 
     let mut bi = 0;
     let mut si = 0;
@@ -110,10 +110,7 @@ pub fn find_matches(book: &mut OrderBook) -> Result<Vec<Trade>, String> {
             (&sell.id, &buy.id)
         };
 
-        let trade_id = format!(
-            "trade-{}-{}-{}",
-            earlier_id, later_id, trade_amount
-        );
+        let trade_id = format!("trade-{}-{}-{}", earlier_id, later_id, trade_amount);
 
         // Extract timestamp from the earlier order's id prefix.
         // Order ids are formatted as "{unix_millis}-{owner_prefix}".
@@ -130,7 +127,7 @@ pub fn find_matches(book: &mut OrderBook) -> Result<Vec<Trade>, String> {
             pair: buy.pair.clone(),
             buyer_signature: String::new(),
             seller_signature: String::new(),
-            vector_clock: clock_at_start.clone(),
+            vector_clock: crate::clock::merge(&buy.vector_clock, &sell.vector_clock),
             created_at,
         };
 
@@ -202,7 +199,6 @@ mod tests {
     #[test]
     fn matches_simple_cross() {
         let mut book = OrderBook::new("local".to_string());
-        // Buy at 100, sell at 90 → should cross at 100 (resting = buy, earlier id)
         book.insert_for_test(order("a-buy", "alice", Side::Buy, "100", "5"));
         book.insert_for_test(order("b-sell", "bob", Side::Sell, "90", "5"));
 
@@ -211,12 +207,10 @@ mod tests {
 
         let t = &trades[0];
         assert_eq!(t.amount, "5");
-        // Resting order = earlier id = "a-buy" → exec price = 100
         assert_eq!(t.price, "100");
         assert_eq!(t.buyer_owner, "alice");
         assert_eq!(t.seller_owner, "bob");
 
-        // Both orders fully filled and tombstoned
         assert_eq!(book.remaining("a-buy"), Decimal::ZERO);
         assert_eq!(book.remaining("b-sell"), Decimal::ZERO);
     }
@@ -234,22 +228,18 @@ mod tests {
     #[test]
     fn price_time_priority_best_price_wins() {
         let mut book = OrderBook::new("local".to_string());
-        // Two sellers: one at 95, one at 90. Best (lowest) price must fill first.
         book.insert_for_test(order("s1-95", "s1", Side::Sell, "95", "5"));
         book.insert_for_test(order("s2-90", "s2", Side::Sell, "90", "5"));
-        // Buyer willing to cross both
         book.insert_for_test(order("buyer", "alice", Side::Buy, "100", "5"));
 
         let trades = find_matches(&mut book).expect("matcher ok");
         assert_eq!(trades.len(), 1);
-        // Should match against s2-90 (best price for buyer)
         assert_eq!(trades[0].sell_order_id, "s2-90");
     }
 
     #[test]
     fn partial_fill_leaves_remainder() {
         let mut book = OrderBook::new("local".to_string());
-        // Buy 5, sell 3 → 3 traded, buy has 2 remaining
         book.insert_for_test(order("buy", "alice", Side::Buy, "100", "5"));
         book.insert_for_test(order("sell", "bob", Side::Sell, "100", "3"));
 
@@ -257,7 +247,6 @@ mod tests {
         assert_eq!(trades.len(), 1);
         assert_eq!(trades[0].amount, "3");
 
-        // Buy still has 2 remaining, sell fully filled
         assert_eq!(book.remaining("buy").to_string(), "2");
         assert_eq!(book.remaining("sell"), Decimal::ZERO);
     }
@@ -265,30 +254,24 @@ mod tests {
     #[test]
     fn large_aggressor_consumes_multiple_levels() {
         let mut book = OrderBook::new("local".to_string());
-        // Sellers at 90, 95, 100 — 2 units each
         book.insert_for_test(order("s-90", "s1", Side::Sell, "90", "2"));
         book.insert_for_test(order("s-95", "s2", Side::Sell, "95", "2"));
         book.insert_for_test(order("s-100", "s3", Side::Sell, "100", "2"));
-        // Buyer wants 5 at 100 → crosses all three levels
         book.insert_for_test(order("big-buy", "alice", Side::Buy, "100", "5"));
 
         let trades = find_matches(&mut book).expect("matcher ok");
         assert_eq!(trades.len(), 3, "three levels consumed");
 
-        // Trade amounts: 2, 2, 1 (last partial)
         assert_eq!(trades[0].amount, "2");
         assert_eq!(trades[1].amount, "2");
         assert_eq!(trades[2].amount, "1");
 
-        // Buyer fully filled
         assert_eq!(book.remaining("big-buy"), Decimal::ZERO);
-        // Last seller still has 1 remaining
         assert_eq!(book.remaining("s-100").to_string(), "1");
     }
 
     #[test]
     fn deterministic_across_runs() {
-        // Two identical books must produce identical match output.
         let build = || {
             let mut b = OrderBook::new("local".to_string());
             b.insert_for_test(order("b1", "a", Side::Buy, "105", "3"));
@@ -316,8 +299,6 @@ mod tests {
 
     #[test]
     fn canonical_trade_id_is_stable_regardless_of_discovery_order() {
-        // Same two orders inserted in opposite order should produce the
-        // same canonical trade id.
         let mut book1 = OrderBook::new("local".to_string());
         book1.insert_for_test(order("aaa-buy", "alice", Side::Buy, "100", "5"));
         book1.insert_for_test(order("bbb-sell", "bob", Side::Sell, "100", "5"));
@@ -332,5 +313,145 @@ mod tests {
         assert_eq!(trades1.len(), 1);
         assert_eq!(trades2.len(), 1);
         assert_eq!(trades1[0].id, trades2[0].id, "canonical trade id must match");
+    }
+}
+
+// ---- Integration test: two peers, two signing keys, one shared trade ----
+// Proves that two independent nodes with different keys produce byte-identical
+// Trade structs and cross-verify each other's signatures. This is the actual
+// 2.B sub-task 9 goal — Tor/IPC were already proven in 2.A.
+#[cfg(test)]
+mod integration {
+    use super::*;
+    use crate::order::{Order, Side};
+    use crate::orderbook::OrderBook;
+    use crate::trade;
+    use ed25519_dalek::SigningKey;
+    use std::collections::HashMap;
+
+    fn make_key(seed: u8) -> SigningKey {
+        let mut bytes = [0u8; 32];
+        bytes[0] = seed;
+        SigningKey::from_bytes(&bytes)
+    }
+
+    fn owner_of(key: &SigningKey) -> String {
+        hex::encode(key.verifying_key().to_bytes())
+    }
+
+    fn signed_order(
+        key: &SigningKey,
+        id: &str,
+        side: Side,
+        price: &str,
+        amount: &str,
+        clock: HashMap<String, u64>,
+    ) -> Order {
+        let owner = owner_of(key);
+        let mut order = Order {
+            id: id.to_string(),
+            owner,
+            side,
+            pair: "TKA/TKB".to_string(),
+            price: price.to_string(),
+            amount: amount.to_string(),
+            expiry: 9_999_999_999,
+            nonce: 1,
+            signature: String::new(),
+            vector_clock: clock,
+        };
+        order.signature = crate::order::sign_order(&order, key);
+        order
+    }
+
+    #[test]
+    fn two_peers_produce_identical_signed_trade() {
+        // ---- Peer A and Peer B, different keys ----
+        let key_a = make_key(1);
+        let key_b = make_key(2);
+        let owner_a = owner_of(&key_a);
+        let owner_b = owner_of(&key_b);
+
+        // ---- A creates a BUY order ----
+        let mut clock_a = HashMap::new();
+        clock_a.insert(owner_a.clone(), 1);
+        let buy = signed_order(&key_a, "1000-aaaa", Side::Buy, "100", "5", clock_a.clone());
+
+        // ---- B creates a SELL order that crosses A's buy ----
+        let mut clock_b = HashMap::new();
+        clock_b.insert(owner_b.clone(), 1);
+        let sell = signed_order(&key_b, "2000-bbbb", Side::Sell, "95", "5", clock_b.clone());
+
+        // ---- Both peers build the same book state (different insertion order) ----
+        let mut book_a = OrderBook::new(owner_a.clone());
+        let mut book_b = OrderBook::new(owner_b.clone());
+
+        book_a.insert_for_test(buy.clone());
+        book_a.insert_for_test(sell.clone());
+        book_b.insert_for_test(sell.clone());
+        book_b.insert_for_test(buy.clone());
+
+        // ---- Both peers run the matcher ----
+        let trades_a = find_matches(&mut book_a).expect("A matcher ok");
+        let trades_b = find_matches(&mut book_b).expect("B matcher ok");
+
+        assert_eq!(trades_a.len(), 1);
+        assert_eq!(trades_b.len(), 1);
+
+        let ta = &trades_a[0];
+        let tb = &trades_b[0];
+
+        // ---- Same trade id, same price, same amount, same signable bytes ----
+        assert_eq!(ta.id, tb.id, "trade ids must match");
+        assert_eq!(ta.price, tb.price);
+        assert_eq!(ta.amount, tb.amount);
+        assert_eq!(ta.buy_order_id, tb.buy_order_id);
+        assert_eq!(ta.sell_order_id, tb.sell_order_id);
+        assert_eq!(
+            ta.signable_bytes(),
+            tb.signable_bytes(),
+            "signable bytes must be byte-identical"
+        );
+
+        // ---- Each peer signs their own side ----
+        let signed_by_a = trade::sign_as(ta, &key_a, &owner_a).expect("A signs");
+        let signed_by_b = trade::sign_as(tb, &key_b, &owner_b).expect("B signs");
+
+        assert!(!signed_by_a.buyer_signature.is_empty());
+        assert!(!signed_by_b.seller_signature.is_empty());
+
+        // ---- Merge: A takes B's seller sig, B takes A's buyer sig ----
+        let mut merged_a = signed_by_a.clone();
+        merged_a.seller_signature = signed_by_b.seller_signature.clone();
+        let mut merged_b = signed_by_b.clone();
+        merged_b.buyer_signature = signed_by_a.buyer_signature.clone();
+
+        // ---- Both peers verify both signatures on the merged trade ----
+        assert!(
+            trade::verify_buyer_signature(&merged_a).is_ok(),
+            "A verifies buyer sig"
+        );
+        assert!(
+            trade::verify_seller_signature(&merged_a).is_ok(),
+            "A verifies seller sig"
+        );
+        assert!(
+            trade::verify_buyer_signature(&merged_b).is_ok(),
+            "B verifies buyer sig"
+        );
+        assert!(
+            trade::verify_seller_signature(&merged_b).is_ok(),
+            "B verifies seller sig"
+        );
+
+        // ---- Fully signed ----
+        assert!(trade::is_fully_signed(&merged_a));
+        assert!(trade::is_fully_signed(&merged_b));
+
+        // ---- Both orders tombstoned as Filled on both peers ----
+        assert!(book_a.get(&buy.id).unwrap().tombstone.is_some());
+        assert!(book_a.get(&sell.id).unwrap().tombstone.is_some());
+        assert!(book_b.get(&buy.id).unwrap().tombstone.is_some());
+        assert!(book_b.get(&sell.id).unwrap().tombstone.is_some());
     }
 }
