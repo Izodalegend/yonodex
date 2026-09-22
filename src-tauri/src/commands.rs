@@ -483,3 +483,168 @@ pub fn order_book_stats(state: State<'_, AppState>) -> Result<BookStats, String>
         total_count: book.total_count(),
     })
 }
+
+// ---- Trade (matching) commands ----
+// Whitepaper Layer 5, Section 7.3: price-time matching, both parties sign.
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct TradePayload {
+    pub id: String,
+    pub buy_order_id: String,
+    pub sell_order_id: String,
+    pub buyer_owner: String,
+    pub seller_owner: String,
+    pub price: String,
+    pub amount: String,
+    pub pair: String,
+    pub buyer_signature: String,
+    pub seller_signature: String,
+    pub vector_clock: std::collections::HashMap<String, u64>,
+    pub created_at: i64,
+}
+
+impl From<&crate::trade::Trade> for TradePayload {
+    fn from(t: &crate::trade::Trade) -> Self {
+        Self {
+            id: t.id.clone(),
+            buy_order_id: t.buy_order_id.clone(),
+            sell_order_id: t.sell_order_id.clone(),
+            buyer_owner: t.buyer_owner.clone(),
+            seller_owner: t.seller_owner.clone(),
+            price: t.price.clone(),
+            amount: t.amount.clone(),
+            pair: t.pair.clone(),
+            buyer_signature: t.buyer_signature.clone(),
+            seller_signature: t.seller_signature.clone(),
+            vector_clock: t.vector_clock.clone(),
+            created_at: t.created_at,
+        }
+    }
+}
+
+impl From<TradePayload> for crate::trade::Trade {
+    fn from(p: TradePayload) -> Self {
+        Self {
+            id: p.id,
+            buy_order_id: p.buy_order_id,
+            sell_order_id: p.sell_order_id,
+            buyer_owner: p.buyer_owner,
+            seller_owner: p.seller_owner,
+            price: p.price,
+            amount: p.amount,
+            pair: p.pair,
+            buyer_signature: p.buyer_signature,
+            seller_signature: p.seller_signature,
+            vector_clock: p.vector_clock,
+            created_at: p.created_at,
+        }
+    }
+}
+
+/// Run the matcher against the current book. Returns unsigned trade proposals.
+/// The caller signs them via `trade_sign_as_local` if they own one side.
+#[tauri::command]
+pub fn trade_find_matches(
+    state: State<'_, AppState>,
+) -> Result<Vec<TradePayload>, String> {
+    let db_guard = state.db.lock().map_err(|e| e.to_string())?;
+    let db = db_guard.as_ref().ok_or("database is locked")?;
+    let mut book_guard = state.book.lock().map_err(|e| e.to_string())?;
+    let book = book_guard.as_mut().ok_or("order book not loaded")?;
+
+    let trades = crate::matcher::find_matches(book)?;
+
+    // Persist the unsigned trades
+    for t in &trades {
+        crate::db::save_trade_agreement(db, t).map_err(|e| e.to_string())?;
+    }
+
+    Ok(trades.iter().map(TradePayload::from).collect())
+}
+
+/// Sign an existing trade as this node's local peer, if we own one side.
+/// Persists the updated trade and broadcasts it via IPC.
+#[tauri::command]
+pub async fn trade_sign_as_local(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    trade: TradePayload,
+) -> Result<TradePayload, String> {
+    let incoming: crate::trade::Trade = trade.into();
+
+    let signed = {
+        let db_guard = state.db.lock().map_err(|e| e.to_string())?;
+        let db = db_guard.as_ref().ok_or("database is locked")?;
+        let key_guard = state.signing_key.lock().map_err(|e| e.to_string())?;
+        let key = key_guard.as_ref().ok_or("signing key not loaded")?;
+        let book_guard = state.book.lock().map_err(|e| e.to_string())?;
+        let book = book_guard.as_ref().ok_or("order book not loaded")?;
+
+        let local = book.local_peer().to_string();
+        let signed = crate::trade::sign_as(&incoming, key, &local)?;
+        crate::db::save_trade_agreement(db, &signed).map_err(|e| e.to_string())?;
+        signed
+    };
+
+    // Broadcast to peer via relay
+    let payload = serde_json::to_value(&signed).map_err(|e| e.to_string())?;
+    if let Err(e) = crate::relay::send(
+        &app,
+        serde_json::json!({ "type": "publish_trade", "trade": payload }),
+    )
+    .await
+    {
+        log::warn!("relay publish_trade failed (non-fatal): {e}");
+    }
+
+    Ok(TradePayload::from(&signed))
+}
+
+/// Apply a trade received from a peer. Merges signatures — if we've already
+/// signed one side, the remote signature is added to our local copy.
+/// Verifies the incoming signature before accepting.
+#[tauri::command]
+pub fn trade_apply_remote(
+    state: State<'_, AppState>,
+    trade: TradePayload,
+) -> Result<TradePayload, String> {
+    let incoming: crate::trade::Trade = trade.into();
+
+    // Verify whichever signature is present in the incoming payload
+    if !incoming.buyer_signature.is_empty() {
+        crate::trade::verify_buyer_signature(&incoming)?;
+    }
+    if !incoming.seller_signature.is_empty() {
+        crate::trade::verify_seller_signature(&incoming)?;
+    }
+
+    let db_guard = state.db.lock().map_err(|e| e.to_string())?;
+    let db = db_guard.as_ref().ok_or("database is locked")?;
+
+    // Merge with any local copy we already have
+    let merged = match crate::db::load_trade(db, &incoming.id).map_err(|e| e.to_string())? {
+        Some(mut local) => {
+            // Merge signatures — keep non-empty values
+            if local.buyer_signature.is_empty() {
+                local.buyer_signature = incoming.buyer_signature.clone();
+            }
+            if local.seller_signature.is_empty() {
+                local.seller_signature = incoming.seller_signature.clone();
+            }
+            local
+        }
+        None => incoming,
+    };
+
+    crate::db::save_trade_agreement(db, &merged).map_err(|e| e.to_string())?;
+    Ok(TradePayload::from(&merged))
+}
+
+/// List all trades the local node has participated in.
+#[tauri::command]
+pub fn trade_list(state: State<'_, AppState>) -> Result<Vec<TradePayload>, String> {
+    let db_guard = state.db.lock().map_err(|e| e.to_string())?;
+    let db = db_guard.as_ref().ok_or("database is locked")?;
+    let trades = crate::db::load_all_trades(db).map_err(|e| e.to_string())?;
+    Ok(trades.iter().map(TradePayload::from).collect())
+}

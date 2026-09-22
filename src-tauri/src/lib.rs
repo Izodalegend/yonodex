@@ -2,10 +2,12 @@ mod clock;
 mod commands;
 mod crypto;
 mod db;
+mod matcher;
 mod order;
 mod orderbook;
 mod relay;
 mod tor;
+mod trade;
 
 use commands::AppState;
 use relay::RelayState;
@@ -41,6 +43,10 @@ pub fn run() {
             commands::order_list,
             commands::order_apply_remote,
             commands::order_book_stats,
+            commands::trade_find_matches,
+            commands::trade_sign_as_local,
+            commands::trade_apply_remote,
+            commands::trade_list,
             tor::tor_start,
             tor::tor_stop,
             tor::tor_is_running,

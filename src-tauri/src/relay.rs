@@ -1,11 +1,12 @@
 // Yonodex Desktop Client - IPC bridge to Node.js gossipsub relay
 // Whitepaper Layer 5, Section 7.1: Rust owns the order book, Node.js is transport
+// Whitepaper Layer 5, Section 7.3: signed trades also flow through this bridge
 //
 // Spawns `node p2p-tor-relay.mjs` as a child process:
 //   - Rust -> Node via child stdin (JSON lines)
 //   - Node -> Rust via child stdout (JSON lines)
 //
-// Incoming orders are validated and applied to the Rust OrderBook.
+// Incoming orders and trades are validated and applied to the Rust state.
 
 use crate::commands::AppState;
 use crate::order::Order;
@@ -117,7 +118,6 @@ pub async fn stop(app: AppHandle) -> Result<(), String> {
 }
 
 /// Send a JSON message to the relay's stdin.
-#[allow(dead_code)]
 pub async fn send(app: &AppHandle, msg: serde_json::Value) -> Result<(), String> {
     let state = app.state::<RelayState>();
     let mut guard = state.stdin.lock().await;
@@ -175,6 +175,12 @@ async fn handle_line(app: &AppHandle, line: &str) -> Result<(), String> {
                 serde_json::from_value(clock_val).map_err(|e| format!("clock parse: {e}"))?;
             apply_incoming_cancel(app, order_id, clock, remote_peer)
         }
+        "trade_received" => {
+            let trade_val = msg.get("trade").cloned().ok_or("missing trade")?;
+            let trade: crate::trade::Trade =
+                serde_json::from_value(trade_val).map_err(|e| format!("trade parse: {e}"))?;
+            apply_incoming_trade(app, trade)
+        }
         other => {
             log::warn!("relay ipc: unknown type {other}");
             Ok(())
@@ -214,7 +220,9 @@ fn apply_incoming_cancel(
     let db = db_guard.as_ref().ok_or("db locked")?;
     let mut book_guard = state.book.lock().map_err(|e| e.to_string())?;
     let book = book_guard.as_mut().ok_or("book not loaded")?;
+
     book.apply_remote_cancel(&order_id, &clock, &remote_peer)?;
+
     if let Some(entry) = book.get(&order_id) {
         let tombstone_str = entry.tombstone.map(|t| match t {
             crate::orderbook::TombstoneKind::Cancelled => "Cancelled",
@@ -223,5 +231,40 @@ fn apply_incoming_cancel(
         crate::db::save_order(db, &entry.order, tombstone_str, entry.tombstoned_at)
             .map_err(|e| e.to_string())?;
     }
+    Ok(())
+}
+
+/// Apply a trade received from a peer via IPC.
+/// Merges signatures with any local copy — verification happens here so the
+/// relay path is self-contained.
+fn apply_incoming_trade(app: &AppHandle, incoming: crate::trade::Trade) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let db_guard = state.db.lock().map_err(|e| e.to_string())?;
+    let db = db_guard.as_ref().ok_or("db locked")?;
+
+    // Verify whichever signature came in
+    if !incoming.buyer_signature.is_empty() {
+        crate::trade::verify_buyer_signature(&incoming)?;
+    }
+    if !incoming.seller_signature.is_empty() {
+        crate::trade::verify_seller_signature(&incoming)?;
+    }
+
+    // Merge with local copy if we have one
+    let merged = match crate::db::load_trade(db, &incoming.id).map_err(|e| e.to_string())? {
+        Some(mut local) => {
+            if local.buyer_signature.is_empty() {
+                local.buyer_signature = incoming.buyer_signature.clone();
+            }
+            if local.seller_signature.is_empty() {
+                local.seller_signature = incoming.seller_signature.clone();
+            }
+            local
+        }
+        None => incoming,
+    };
+
+    crate::db::save_trade_agreement(db, &merged).map_err(|e| e.to_string())?;
+    log::info!("applied remote trade {}", merged.id);
     Ok(())
 }

@@ -136,3 +136,31 @@ CREATE TABLE IF NOT EXISTS signing_identity (
     derived_from    TEXT,
     created_at      INTEGER NOT NULL
 );
+
+-- Trade cache — CRDT trade agreements
+-- Whitepaper Layer 5, Section 7.3: both parties sign; agreement is durable.
+-- The authoritative store is `trade_json` (serialized Trade struct).
+-- Both peers persist every trade they've signed or cosigned.
+CREATE TABLE IF NOT EXISTS trade_cache (
+    trade_id        TEXT PRIMARY KEY,
+    pair            TEXT NOT NULL,
+    buy_order_id    TEXT NOT NULL,
+    sell_order_id   TEXT NOT NULL,
+    buyer_owner     TEXT NOT NULL,
+    seller_owner    TEXT NOT NULL,
+    price           TEXT NOT NULL,
+    amount          TEXT NOT NULL,
+    buyer_signature  TEXT,
+    seller_signature TEXT,
+    created_at      INTEGER NOT NULL,
+    trade_json      TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_trade_cache_pair_created
+    ON trade_cache(pair, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_trade_cache_buyer
+    ON trade_cache(buyer_owner);
+
+CREATE INDEX IF NOT EXISTS idx_trade_cache_seller
+    ON trade_cache(seller_owner);

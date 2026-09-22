@@ -557,3 +557,97 @@ pub fn load_signing_identity(db: &DbHandle) -> Result<Option<(String, String)>, 
 
     Ok(row)
 }
+// ---- Trade persistence ----
+// Whitepaper Layer 5, Section 7.3: signed trade agreements are durable.
+
+/// Save or update a trade in the trade_cache table.
+pub fn save_trade_agreement(
+    db: &DbHandle,
+    trade: &crate::trade::Trade,
+) -> Result<(), DbError> {
+    let trade_json = serde_json::to_string(trade)
+        .map_err(|e| DbError::Sqlite(format!("trade serialize: {e}")))?;
+
+    let buyer_sig = if trade.buyer_signature.is_empty() {
+        None
+    } else {
+        Some(trade.buyer_signature.clone())
+    };
+    let seller_sig = if trade.seller_signature.is_empty() {
+        None
+    } else {
+        Some(trade.seller_signature.clone())
+    };
+
+    db.conn
+        .execute(
+            "INSERT INTO trade_cache
+                (trade_id, pair, buy_order_id, sell_order_id, buyer_owner, seller_owner,
+                 price, amount, buyer_signature, seller_signature, created_at, trade_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             ON CONFLICT(trade_id) DO UPDATE SET
+                buyer_signature = excluded.buyer_signature,
+                seller_signature = excluded.seller_signature,
+                trade_json = excluded.trade_json",
+            rusqlite::params![
+                trade.id,
+                trade.pair,
+                trade.buy_order_id,
+                trade.sell_order_id,
+                trade.buyer_owner,
+                trade.seller_owner,
+                trade.price,
+                trade.amount,
+                buyer_sig,
+                seller_sig,
+                trade.created_at,
+                trade_json,
+            ],
+        )
+        .map_err(|e| DbError::Sqlite(e.to_string()))?;
+
+    Ok(())
+}
+
+/// Load a single trade by id.
+pub fn load_trade(db: &DbHandle, trade_id: &str) -> Result<Option<crate::trade::Trade>, DbError> {
+    let mut stmt = db
+        .conn
+        .prepare("SELECT trade_json FROM trade_cache WHERE trade_id = ?1")
+        .map_err(|e| DbError::Sqlite(e.to_string()))?;
+
+    let json_opt: Option<String> = stmt
+        .query_row(rusqlite::params![trade_id], |r| r.get::<_, String>(0))
+        .ok();
+
+    match json_opt {
+        Some(json) => {
+            let trade: crate::trade::Trade = serde_json::from_str(&json)
+                .map_err(|e| DbError::Sqlite(format!("trade deserialize: {e}")))?;
+            Ok(Some(trade))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Load all trades, newest first.
+pub fn load_all_trades(db: &DbHandle) -> Result<Vec<crate::trade::Trade>, DbError> {
+    let mut stmt = db
+        .conn
+        .prepare("SELECT trade_json FROM trade_cache ORDER BY created_at DESC")
+        .map_err(|e| DbError::Sqlite(e.to_string()))?;
+
+    let rows = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(|e| DbError::Sqlite(e.to_string()))?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        let json = row.map_err(|e| DbError::Sqlite(e.to_string()))?;
+        let trade: crate::trade::Trade = serde_json::from_str(&json)
+            .map_err(|e| DbError::Sqlite(format!("trade deserialize: {e}")))?;
+        out.push(trade);
+    }
+
+    Ok(out)
+}

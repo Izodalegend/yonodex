@@ -8,14 +8,16 @@
 //   - Concurrent conflicting operations use LWW (Last-Write-Wins)
 //   - Tombstones GC'd after retention window (default 24h)
 //
-// The local clock ticks on every local mutation and merges on every
-// remote mutation, giving us a stable causal ordering.
+// Fills are tracked separately (order_id -> cumulative filled amount)
+// so the signed Order struct stays immutable.
 
 use crate::clock::{self, ClockOrdering, VectorClock};
 use crate::db::{self, DbHandle};
 use crate::order::{self, Order, Side};
 use ed25519_dalek::SigningKey;
+use rust_decimal::Decimal;
 use std::collections::HashMap;
+use std::str::FromStr;
 
 /// Retention window for tombstones: 24 hours (in seconds).
 pub const TOMBSTONE_RETENTION_SECS: i64 = 24 * 60 * 60;
@@ -40,6 +42,8 @@ pub struct BookEntry {
 pub struct OrderBook {
     /// order_id -> entry
     entries: HashMap<String, BookEntry>,
+    /// order_id -> cumulative filled amount (across all matches)
+    fills: HashMap<String, Decimal>,
     /// Local vector clock — ticks on every local operation, merges on remote.
     clock: VectorClock,
     /// This node's peer identifier (used as the key in the vector clock).
@@ -50,6 +54,7 @@ impl OrderBook {
     pub fn new(local_peer: String) -> Self {
         Self {
             entries: HashMap::new(),
+            fills: HashMap::new(),
             clock: HashMap::new(),
             local_peer,
         }
@@ -86,6 +91,44 @@ impl OrderBook {
             .map(|e| &e.order)
     }
 
+    /// How much of an order is still fillable.
+    /// Returns 0 if the order is unknown or already fully filled.
+    pub fn remaining(&self, order_id: &str) -> Decimal {
+        let entry = match self.entries.get(order_id) {
+            Some(e) => e,
+            None => return Decimal::ZERO,
+        };
+
+        let total = Decimal::from_str(&entry.order.amount).unwrap_or(Decimal::ZERO);
+        let filled = self.fills.get(order_id).copied().unwrap_or(Decimal::ZERO);
+
+        if filled >= total {
+            Decimal::ZERO
+        } else {
+            total - filled
+        }
+    }
+
+    /// Record a fill against an order. Fills accumulate.
+    pub fn record_fill(&mut self, order_id: &str, amount: Decimal) -> Result<(), String> {
+        if !self.entries.contains_key(order_id) {
+            return Err(format!("unknown order {order_id}"));
+        }
+        let entry = self.fills.entry(order_id.to_string()).or_insert(Decimal::ZERO);
+        *entry += amount;
+        Ok(())
+    }
+
+    /// Iterate over live orders that still have remaining amount to fill.
+    pub fn fillable_orders(&self) -> Vec<&Order> {
+        self.entries
+            .values()
+            .filter(|e| e.tombstone.is_none())
+            .filter(|e| self.remaining(&e.order.id) > Decimal::ZERO)
+            .map(|e| &e.order)
+            .collect()
+    }
+
     /// Create a new order locally: sign, tick clock, add to book, persist nonce.
     pub fn create_local(
         &mut self,
@@ -98,21 +141,17 @@ impl OrderBook {
         amount: &str,
         expiry: i64,
     ) -> Result<Order, String> {
-        // Generate a unique order id (timestamp + owner prefix for readability)
         let now_millis = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis())
             .unwrap_or(0);
         let id = format!("{}-{}", now_millis, &owner[..8.min(owner.len())]);
 
-        // Get next nonce from DB
         let last_nonce = db::get_last_nonce(db, owner).map_err(|e| e.to_string())?;
         let nonce = last_nonce + 1;
 
-        // Tick clock
         clock::tick(&mut self.clock, &self.local_peer);
 
-        // Build order (signature empty for now)
         let mut order = Order {
             id: id.clone(),
             owner: owner.to_string(),
@@ -126,13 +165,10 @@ impl OrderBook {
             vector_clock: self.clock.clone(),
         };
 
-        // Sign
         order.signature = order::sign_order(&order, signing_key);
 
-        // Persist nonce BEFORE adding to book (so restart recovery is safe)
         db::set_last_nonce(db, owner, nonce).map_err(|e| e.to_string())?;
 
-        // Add to book
         self.entries.insert(
             id.clone(),
             BookEntry {
@@ -146,32 +182,19 @@ impl OrderBook {
     }
 
     /// Apply a remote order received from the network.
-    /// Validates signature, checks nonce, merges clock, adds to book.
-    pub fn apply_remote(
-        &mut self,
-        db: &DbHandle,
-        incoming: Order,
-    ) -> Result<(), String> {
-        // 1. Verify signature
+    pub fn apply_remote(&mut self, db: &DbHandle, incoming: Order) -> Result<(), String> {
         order::verify_order(&incoming)?;
 
-        // 2. Check nonce (replay protection)
-        db::check_nonce(db, &incoming.owner, incoming.nonce)
-            .map_err(|e| e.to_string())?;
+        db::check_nonce(db, &incoming.owner, incoming.nonce).map_err(|e| e.to_string())?;
 
-        // 3. Duplicate check — if we've already seen this order id, ignore
         if self.entries.contains_key(&incoming.id) {
             return Ok(());
         }
 
-        // 4. Merge clock
         self.clock = clock::merge(&self.clock, &incoming.vector_clock);
 
-        // 5. Advance nonce tracker
-        db::set_last_nonce(db, &incoming.owner, incoming.nonce)
-            .map_err(|e| e.to_string())?;
+        db::set_last_nonce(db, &incoming.owner, incoming.nonce).map_err(|e| e.to_string())?;
 
-        // 6. Add to book
         self.entries.insert(
             incoming.id.clone(),
             BookEntry {
@@ -184,7 +207,7 @@ impl OrderBook {
         Ok(())
     }
 
-    /// Cancel an order locally. Marks the entry as tombstoned, ticks clock.
+    /// Cancel an order locally.
     pub fn cancel_local(&mut self, order_id: &str) -> Result<(), String> {
         let entry = self
             .entries
@@ -201,7 +224,7 @@ impl OrderBook {
         Ok(())
     }
 
-    /// Apply a remote cancellation. Uses LWW semantics via vector clocks.
+    /// Apply a remote cancellation. LWW semantics via vector clocks.
     pub fn apply_remote_cancel(
         &mut self,
         order_id: &str,
@@ -211,13 +234,11 @@ impl OrderBook {
         let entry = match self.entries.get_mut(order_id) {
             Some(e) => e,
             None => {
-                // Order not seen yet — merge clock anyway so we're not blindsided later
                 self.clock = clock::merge(&self.clock, remote_clock);
                 return Ok(());
             }
         };
 
-        // If already tombstoned, use vector clock comparison to decide winner
         if entry.tombstone.is_some() {
             let ordering = clock::compare(&entry.order.vector_clock, remote_clock);
             match ordering {
@@ -225,11 +246,8 @@ impl OrderBook {
                     entry.tombstone = Some(TombstoneKind::Cancelled);
                     entry.tombstoned_at = Some(now_secs());
                 }
-                ClockOrdering::After => {
-                    // Our state is newer — ignore
-                }
+                ClockOrdering::After => {}
                 ClockOrdering::Concurrent => {
-                    // Tie-break: higher peer_id wins (deterministic across all nodes)
                     if remote_peer > self.local_peer.as_str() {
                         entry.tombstone = Some(TombstoneKind::Cancelled);
                         entry.tombstoned_at = Some(now_secs());
@@ -241,12 +259,11 @@ impl OrderBook {
             entry.tombstoned_at = Some(now_secs());
         }
 
-        // Merge clock
         self.clock = clock::merge(&self.clock, remote_clock);
         Ok(())
     }
 
-    /// Mark an order as filled (tombstone as Filled). Called by the matching engine.
+    /// Mark an order as filled.
     pub fn mark_filled(&mut self, order_id: &str) -> Result<(), String> {
         let entry = self
             .entries
@@ -260,21 +277,19 @@ impl OrderBook {
     }
 
     /// Garbage collect tombstones older than the retention window.
-    /// Returns the number of entries removed.
     pub fn gc(&mut self) -> usize {
         let cutoff = now_secs() - TOMBSTONE_RETENTION_SECS;
         let before = self.entries.len();
 
         self.entries.retain(|_, entry| match entry.tombstoned_at {
-            Some(ts) => ts > cutoff, // keep recent tombstones
-            None => true,            // always keep live orders
+            Some(ts) => ts > cutoff,
+            None => true,
         });
 
         before - self.entries.len()
     }
 
     /// Merge another OrderBook's state into this one.
-    /// Used for state reconciliation after a network partition.
     pub fn merge_from(&mut self, other: &OrderBook) {
         for (id, other_entry) in &other.entries {
             match self.entries.get_mut(id) {
@@ -294,23 +309,25 @@ impl OrderBook {
             }
         }
 
+        for (order_id, amount) in &other.fills {
+            let entry = self.fills.entry(order_id.clone()).or_insert(Decimal::ZERO);
+            if *amount > *entry {
+                *entry = *amount;
+            }
+        }
+
         self.clock = clock::merge(&self.clock, &other.clock);
     }
 
     /// Restore a single order from the encrypted DB on app startup.
-    /// Bypasses signature/nonce checks — the DB is the trusted local store.
-    ///
-    /// IMPORTANT: merges the persisted order's vector clock into the local
-    /// clock so the clock resumes from where it left off, not from empty.
-    /// Without this, local ops after a restart would collide with pre-restart
-    /// clock values and break causal ordering.
+    /// Merges the persisted order's vector clock into the local clock so
+    /// the clock resumes from where it left off, not from empty.
     pub fn restore_persisted(
         &mut self,
         order: Order,
         tombstone: Option<String>,
         tombstoned_at: Option<i64>,
     ) {
-        // Resume local clock from the highest value we've ever seen.
         self.clock = clock::merge(&self.clock, &order.vector_clock);
 
         let kind = tombstone.as_deref().and_then(|s| match s {
@@ -325,6 +342,20 @@ impl OrderBook {
                 order,
                 tombstone: kind,
                 tombstoned_at,
+            },
+        );
+    }
+
+    /// Test-only: insert an order without signature or nonce checks.
+    /// Used by unit tests to build a known book state quickly.
+    #[cfg(test)]
+    pub fn insert_for_test(&mut self, order: Order) {
+        self.entries.insert(
+            order.id.clone(),
+            BookEntry {
+                order,
+                tombstone: None,
+                tombstoned_at: None,
             },
         );
     }
