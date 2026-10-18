@@ -1,115 +1,45 @@
-TEFA DEX – Gasless Multi‑Chain Exchange
+# Yonodex (TefaDex)
 
-A fully functional decentralised exchange (DEX) that uses **meta‑transactions (gasless swaps)**.  
-Users sign messages; the relayer pays gas and submits transactions. No ETH required for trading.
+**A censorship-resistant, privacy-preserving AMM & P2P DEX.**
 
----
+Yonodex is a next-generation decentralized exchange designed from first principles around security, privacy, and censorship resistance. Unlike conventional DEXs that rely on centralized frontend infrastructure, proprietary matching engines, or custodial intermediaries, Yonodex operates as a fully peer-to-peer network.
 
-🔥 Live (Sepolia testnet)
+## Architecture (10 Layers)
+1. **Public Interface:** Disposable, centralized (IPFS, Tor, Clearnet).
+2. **Software Distribution:** Verifiable, trust-minimized (GPG, reproducible builds).
+3. **Client Layer:** User Sovereignty (Tauri + Svelte + SQLCipher).
+4. **P2P Network:** Decentralized (Tor hidden services, libp2p, Noise_XX).
+5. **Protocol Layer:** Off-chain order book (CRDT) & deterministic matching engine.
+6. **Data & Oracle:** Trust-minimized (Chainlink, Pyth, The Graph).
+7. **Settlement:** On-chain 2-of-2 multisig escrow (YonodexEscrow).
+8. **Governance:** DAO-controlled (TEFA token, Snapshot X).
+9. **Security:** Active defense (Forta, Tenderly).
+10. **Community:** Censorship-resistant coordination (Matrix, Discourse).
 
-**Main URL:** https://dex.147.182.193.26.nip.io  
-*Accept the self‑signed certificate warning.*
+## Repository Structure
+This is a monorepo containing the following components:
+*   `/src-tauri` — The Rust backend (Tauri v2 core, P2P networking, SQLCipher DB).
+*   `/desktop` — The Svelte + Vite frontend user interface.
+*   `/contracts-foundry` — The Solidity smart contracts (Escrow, HTLC, Smart Router) built with Foundry.
+*   `/contracts` — Legacy Hardhat contracts (deprecated/for reference).
 
----
+## Project Status: Phase 2 (Protocol & Settlement)
+- **Phase 1 (Client & P2P):** ✅ Complete (Encrypted DB, Tor transport, Frame wallet).
+- **Phase 2 (Protocol & Settlement):** 🔄 In Progress (CRDT order book, Matching Engine done. Escrow deployed to local Anvil).
+- **Phase 3-5 (Distribution, Oracles, Governance):** 📋 Planned.
 
-## 📦 Core Components
+## Quick Start (Development)
 
-| Component          | Path                     | What it does                                |
-|--------------------|--------------------------|---------------------------------------------|
-| **Frontend**       | `/frontend`              | React + Vite + Tailwind UI                  |
-| **Relayer (API)**  | `/relayer/src/server.cjs`| Handles admin auth, swap queue, metrics     |
-| **Relayer Worker** | `/relayer/src/worker.cjs`| Processes swaps (BullMQ + Redis)            |
-| **Smart Contracts**| `/contracts`             | Executor, Router, Test tokens (Sepolia)     |
+### Prerequisites
+- Node.js (v18+)
+- Rust (stable) & Cargo
+- Tauri CLI (`cargo install tauri-cli --version "^2"`)
+- **Windows Only:** Microsoft Visual C++ Build Tools and Strawberry Perl (Required for compiling OpenSSL/SQLCipher from source).
 
----
-
-## 🚀 Running the DEX
-
-### 1. Start relayer backend
+### Build & Run
 ```bash
-cd /root/tefa-dex/relayer
-PORT=3001 node src/server.cjs &
-node src/worker.cjs &
-```
+# 1. Install frontend dependencies
+cd desktop && npm install
 
-### 2. Start frontend
-```bash
-cd /root/tefa-dex/frontend
-npm run dev -- --host 0.0.0.0 --port 5173
-```
-
-### 3. Nginx proxy (HTTPS)
-- API routes (`/api/*`, `/metrics`) → `localhost:3001`
-- Everything else → `localhost:5173`
-
----
-
-## 👑 Admin Dashboard
-
-Connect with one of the authorised admin wallets:
-
-- `0xa35dcfB812fB9D9DF1f59e45b72abc94683a9734`
-- `0x46980BC901a04B9AD24E86a4d76eCd7c45df6ca4`
-
-**Features:**
-- Relayer balance & queue status
-- Recent swap jobs
-- Success/failure rates
-- Contract addresses (Sepolia)
-
----
-
-## 🧪 Sepolia Contracts
-
-| Contract       | Address                                                                               |
-|----------------|---------------------------------------------------------------------------------------|
-| Gasless Executor | `0xfA6e245B353934c6D9980b285F3660694764384c`                                         |
-| Router         | `0xFD2E239e503e74a288Ae8AfD9D37c119946A90Ca`                                         |
-| Pool (TKA/TKB) | `0xdc9869FA8768CC98f67996dcb9FFF9c3bb5aA802`                                         |
-| Relayer Wallet | `0xa35dcfB812fB9D9DF1f59e45b72abc94683a9734`                                         |
-
----
-
-## 🛠️ Tech Stack
-
-- **Frontend:** React, TypeScript, Vite, Tailwind, Ethers, Recharts
-- **Backend:** Node.js, Express, BullMQ, Redis, SIWE
-- **Blockchain:** Ethereum Sepolia, Hardhat
-- **Process Manager:** PM2
-- **Proxy:** Nginx
-
----
-
-## 📁 Project Structure (after cleanup)
-
-```
-tefa-dex/
-├── frontend/           # React DEX UI
-│   ├── src/
-│   └── package.json
-├── relayer/            # Gasless relayer
-│   ├── src/
-│   │   ├── server.cjs
-│   │   └── worker.cjs
-│   └── .env
-├── contracts/          # Solidity smart contracts
-├── scripts/            # Deployment helpers
-├── ignition/           # Hardhat ignition modules
-├── artifacts/ & cache/ # Build outputs
-└── README.md
-```
-
----
-
-## 👤 Author & Support
-
-Built for Sepolia testnet.  
-For issues or feature requests, open a GitHub issue.
-
-**⚠️ Self‑signed certificate:** The live domain uses a self‑signed SSL certificate. Your browser will ask for confirmation – accept it to proceed.
-
----
-
-## 📄 License
-
-MIT
+# 2. Run the app in development mode
+npm run tauri dev
