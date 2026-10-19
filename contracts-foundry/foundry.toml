@@ -7,10 +7,19 @@ optimizer = true
 optimizer_runs = 200
 via_ir = false
 evm_version = "shanghai"
+fs_permissions = [{ access = "read-write", path = "./deployments/" }]
+
 
 remappings = [
     "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
     "forge-std/=lib/forge-std/src/",
+    "account-abstraction/=lib/account-abstraction/contracts/"
 ]
 
-# See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
+[rpc_endpoints]
+sepolia = "${SEPOLIA_RPC_URL}"
+arbitrum_sepolia = "${ARB_SEPOLIA_RPC_URL}"
+
+[etherscan]
+sepolia = { key = "${ETHERSCAN_API_KEY}" }
+arbitrum_sepolia = { key = "${ARBISCAN_API_KEY}", url = "https://api-sepolia.arbiscan.io/api" }
