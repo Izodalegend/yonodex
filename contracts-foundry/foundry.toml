@@ -21,5 +21,5 @@ sepolia = "${SEPOLIA_RPC_URL}"
 arbitrum_sepolia = "${ARB_SEPOLIA_RPC_URL}"
 
 [etherscan]
-sepolia = { key = "${ETHERSCAN_API_KEY}" }
-arbitrum_sepolia = { key = "${ARBISCAN_API_KEY}", url = "https://api-sepolia.arbiscan.io/api" }
+sepolia = { key = "${ETHERSCAN_API_KEY}", url = "https://api.etherscan.io/v2/api?chainid=11155111" }
+arbitrum_sepolia = { key = "${ARBISCAN_API_KEY}", url = "https://api.etherscan.io/v2/api?chainid=421614" }
