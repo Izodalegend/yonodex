@@ -83,3 +83,4 @@ src-tauri/tor/
 # Tor binaries in resources are distributed via releases, not git
 # (uncomment the line below if the repo gets too large)
 # src-tauri/resources/tor/tor/
+mirror/
