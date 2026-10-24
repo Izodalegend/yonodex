@@ -1,5 +1,5 @@
 Yonodex Frontend IPFS CID
 ==========================
 Build Version: 0.1.2
-CID: QmacwpKHNSCe3xWJuZMk3cw4MuV86hBgMeEQtpWq8cwSYv
-Gateway URL: https://ipfs.io/ipfs/QmacwpKHNSCe3xWJuZMk3cw4MuV86hBgMeEQtpWq8cwSYv
+CID: QmXijw8sxpmtEh6NpUR3tvpYeBW96658rtCCwtQNeKnwqh
+Gateway URL: https://ipfs.io/ipfs/QmXijw8sxpmtEh6NpUR3tvpYeBW96658rtCCwtQNeKnwqh

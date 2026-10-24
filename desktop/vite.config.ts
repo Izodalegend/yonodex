@@ -1,7 +1,18 @@
-import { svelte } from '@sveltejs/vite-plugin-svelte'
-import { defineConfig } from 'vite'
+import { defineConfig } from "vite";
+import { svelte } from "@sveltejs/vite-plugin-svelte";
 
-// https://vite.dev/config/
 export default defineConfig({
+  base: './',
   plugins: [svelte()],
-})
+  server: {
+    port: 5173,
+    strictPort: true,
+  },
+  clearScreen: false,
+  envPrefix: ["VITE_", "TAURI_"],
+  build: {
+    target: "esnext",
+    minify: "esbuild",
+    sourcemap: false,
+  },
+});

@@ -1,0 +1,7 @@
+SocksPort 0
+Log notice file C:\Users\Hp\Documents\yonodex\mirror\tor-mirror.log
+DataDirectory C:\Users\Hp\Documents\yonodex\mirror\tor-data
+
+# Hidden Service for the Frontend Mirror
+HiddenServiceDir C:\Users\Hp\Documents\yonodex\mirror\tor-service
+HiddenServicePort 80 127.0.0.1:8080
