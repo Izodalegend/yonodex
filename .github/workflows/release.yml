@@ -1,0 +1,49 @@
+name: Release Build
+
+on:
+  push:
+    tags:
+      - 'v*' # Triggers only when you push a version tag, e.g., v0.1.2
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: 'desktop/package-lock.json'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.80.0
+
+      - name: Install Frontend Dependencies
+        run: npm install
+        working-directory: ./desktop
+
+      - name: Build Tauri App (Reproducible)
+        env:
+          # Sets the timestamp to a deterministic value to prevent binary hash changes
+          SOURCE_DATE_EPOCH: 1700000000
+          # Strips machine-specific paths from the binary
+          RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}=/build"
+        run: |
+          cd src-tauri
+          # Note: In a real production environment, we would use a GitHub Secret for the signing key
+          cargo tauri build
+
+      - name: Upload Installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: yonodex-installers
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
