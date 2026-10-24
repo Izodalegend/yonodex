@@ -25,6 +25,8 @@
   let error = $state<string | null>(null);
   let wrongChain = $state(false);
   let switching = $state(false);
+  let showDropdown = $state(false);
+  
   let connected = $state<{
     address: string;
     chainId: string;
@@ -40,6 +42,10 @@
       const eip6963 = await discoverWallets();
       const frame = await detectFrame();
       wallets = frame ? [...eip6963, frame] : eip6963;
+      if (wallets.length === 1) {
+        // Auto-connect if only one wallet is found
+        connect(wallets[0]);
+      }
     } finally {
       scanning = false;
     }
@@ -87,11 +93,17 @@
   onMount(async () => {
     await scan();
     await restore();
+    
+    // Close dropdown on click outside
+    const close = () => (showDropdown = false);
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
   });
 
   async function connect(wallet: DetectedWallet) {
     connecting = true;
     error = null;
+    showDropdown = false;
     try {
       const accounts = (await wallet.provider.request({
         method: "eth_requestAccounts",
@@ -112,7 +124,6 @@
           wallet_name: wallet.info.name,
         });
       } catch (e) {
-        // Non-fatal - connection still works this session
         console.error("Failed to persist wallet config:", e);
       }
 
@@ -165,178 +176,71 @@
   }
 </script>
 
-<div class="wallet-connect">
+<div class="relative flex items-center gap-3">
   {#if connected}
     {#if wrongChain}
-      <div class="warning">
-        Wrong network. Please switch to {expectedChain.shortName}.
-      </div>
-      <button class="switch-btn" onclick={handleSwitchChain} disabled={switching}>
+      <button 
+        class="bg-yellow-500 hover:bg-yellow-600 text-black text-xs font-bold py-1.5 px-3 rounded-md transition-colors"
+        onclick={handleSwitchChain} 
+        disabled={switching}
+      >
         {switching ? "Switching..." : "Switch to " + expectedChain.shortName}
       </button>
     {/if}
 
-    <div class="connected-card">
-      <span class="dot"></span>
-      <span class="address">{shorten(connected.address)}</span>
-      <span class="wallet-name">via {connected.wallet.info.name}</span>
+    <div class="flex items-center gap-2 bg-[#1a1a1f] border border-[#2a2a32] rounded-full px-3 py-1.5">
+      <span class="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_5px_rgba(34,197,94,0.5)]"></span>
+      <span class="text-sm font-mono text-white">{shorten(connected.address)}</span>
+      <span class="text-xs text-gray-500 hidden md:inline">via {connected.wallet.info.name}</span>
     </div>
 
-    <button class="disconnect-btn" onclick={handleDisconnect}>Disconnect</button>
+    <button 
+      class="text-xs text-gray-500 hover:text-red-400 transition-colors" 
+      onclick={handleDisconnect}
+    >
+      Disconnect
+    </button>
+
   {:else if scanning}
-    <div class="hint">Scanning for wallets...</div>
+    <div class="text-xs text-gray-500 animate-pulse">Scanning for wallets...</div>
+    
   {:else if wallets.length === 0}
-    <div class="hint">
-      No wallet detected.
-      <br />
-      <span class="small">Install Frame or a browser wallet, then retry.</span>
+    <div class="flex items-center gap-3">
+      <span class="text-xs text-gray-500">No wallet detected</span>
+      <button 
+        class="bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium py-1.5 px-4 rounded-lg transition-colors"
+        onclick={scan}
+      >
+        Retry
+      </button>
     </div>
-    <button class="retry" onclick={scan}>Retry</button>
+    
   {:else}
-    <div class="wallet-list">
-      {#each wallets as wallet (wallet.info.uuid)}
-        <button
-          class="wallet-btn"
-          onclick={() => connect(wallet)}
-          disabled={connecting}
-        >
-          {connecting ? "Connecting..." : "Connect " + wallet.info.name}
-        </button>
-      {/each}
-    </div>
+    <button 
+      class="bg-purple-600 hover:bg-purple-700 text-white text-sm font-medium py-1.5 px-4 rounded-lg transition-colors shadow-lg shadow-purple-900/20"
+      onclick={(e) => { e.stopPropagation(); showDropdown = !showDropdown; }}
+      disabled={connecting}
+    >
+      {connecting ? "Connecting..." : "Connect Wallet"}
+    </button>
+
+    {#if showDropdown}
+      <div class="absolute right-0 top-full mt-2 w-48 bg-[#1a1a1f] border border-[#2a2a32] rounded-lg shadow-2xl overflow-hidden z-50 flex flex-col">
+        {#each wallets as wallet (wallet.info.uuid)}
+          <button
+            class="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:bg-[#2a2a32] hover:text-white transition-colors"
+            onclick={() => connect(wallet)}
+          >
+            Connect {wallet.info.name}
+          </button>
+        {/each}
+      </div>
+    {/if}
   {/if}
 
   {#if error}
-    <div class="error">{error}</div>
+    <div class="absolute right-0 top-full mt-2 bg-red-900/90 border border-red-700 text-red-200 text-xs px-3 py-2 rounded-md z-50 whitespace-nowrap">
+      {error}
+    </div>
   {/if}
 </div>
-
-<style>
-  .wallet-connect {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 0.75rem;
-    min-width: 260px;
-  }
-
-  .hint {
-    color: #8b8b94;
-    font-size: 0.95rem;
-    text-align: center;
-    line-height: 1.5;
-  }
-
-  .hint .small {
-    font-size: 0.8rem;
-    color: #6b6b74;
-  }
-
-  .wallet-list {
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-    width: 100%;
-  }
-
-  .wallet-btn {
-    background: linear-gradient(135deg, #a78bfa, #7c3aed);
-    color: white;
-    border: none;
-    border-radius: 8px;
-    padding: 0.75rem 1.5rem;
-    font-size: 1rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: opacity 0.2s;
-  }
-
-  .wallet-btn:hover:not(:disabled) {
-    opacity: 0.9;
-  }
-
-  .wallet-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .retry {
-    background: transparent;
-    color: #a78bfa;
-    border: 1px solid #a78bfa;
-    border-radius: 8px;
-    padding: 0.5rem 1rem;
-    cursor: pointer;
-  }
-
-  .connected-card {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    background: #1a1a1f;
-    border: 1px solid #2a2a32;
-    border-radius: 8px;
-    padding: 0.75rem 1rem;
-  }
-
-  .dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: #22c55e;
-  }
-
-  .address {
-    font-family: monospace;
-    color: #e8e8ec;
-  }
-
-  .wallet-name {
-    color: #6b6b74;
-    font-size: 0.85rem;
-  }
-
-  .disconnect-btn {
-    background: transparent;
-    color: #6b6b74;
-    border: none;
-    font-size: 0.8rem;
-    cursor: pointer;
-    text-decoration: underline;
-    padding: 0;
-  }
-
-  .disconnect-btn:hover {
-    color: #b8b8c0;
-  }
-
-  .switch-btn {
-    background: #f59e0b;
-    color: #0f0f12;
-    border: none;
-    border-radius: 8px;
-    padding: 0.5rem 1rem;
-    font-size: 0.85rem;
-    font-weight: 600;
-    cursor: pointer;
-    width: 100%;
-  }
-
-  .switch-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .warning {
-    color: #f59e0b;
-    font-size: 0.8rem;
-    text-align: center;
-    line-height: 1.4;
-  }
-
-  .error {
-    color: #f87171;
-    font-size: 0.85rem;
-    text-align: center;
-  }
-</style>
