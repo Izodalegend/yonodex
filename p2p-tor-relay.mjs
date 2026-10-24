@@ -1,20 +1,6 @@
 // Yonodex Desktop Client - Tor-enabled libp2p relay
 // Whitepaper Layer 4, Section 6.1: Tor Onion Transport
 // Whitepaper Layer 5, Section 7.1: Order book lives in Rust - Node.js is transport only
-//
-// CLI arguments:
-//   --listen-port <port>   Local port to bind (default 4001)
-//   --dial <multiaddr>     Peer multiaddr to dial on startup
-//   --no-onion             Don't read .onion or advertise (dialer-only mode)
-//
-// IPC (Rust <-> Node.js):
-//   stdin  (Rust -> Node): {"type":"publish_order", "order": {...}}
-//                          {"type":"publish_cancel", "order_id":"...","vector_clock":{},"remote_peer":"..."}
-//                          {"type":"publish_trade", "trade": {...}}
-//   stdout (Node -> Rust): {"type":"order_received", "order": {...}}
-//                          {"type":"cancel_received", "order_id":"...","vector_clock":{},"remote_peer":"..."}
-//                          {"type":"trade_received", "trade": {...}}
-//                          {"type":"status", "ready":true, "peer_count":N}
 
 import { createLibp2p } from 'libp2p'
 import { noise } from '@chainsafe/libp2p-noise'
@@ -83,13 +69,13 @@ function startIpcReader(onPublishOrder, onPublishCancel, onPublishTrade) {
   })
 }
 
-// ---- CLI parsing ----
+// ---- CLI parsing (Updated for multiple dials) ----
 function parseArgs(argv) {
-  const args = { listenPort: 4001, dial: null, noOnion: false }
+  const args = { listenPort: 4001, dials: [], noOnion: false }
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--listen-port') args.listenPort = Number(argv[++i])
-    else if (a === '--dial') args.dial = argv[++i]
+    else if (a === '--dial') args.dials.push(argv[++i])
     else if (a === '--no-onion') args.noOnion = true
   }
   return args
@@ -108,7 +94,7 @@ async function readOwnOnionAddress() {
 
 async function startTorRelay() {
   const args = parseArgs(process.argv)
-  console.log(`⚙️  Config: port=${args.listenPort} dial=${args.dial ?? 'none'} noOnion=${args.noOnion}`)
+  console.log(`⚙️  Config: port=${args.listenPort} dials=${args.dials.length > 0 ? args.dials.join(', ') : 'none'} noOnion=${args.noOnion}`)
 
   let onionAddress = null
   let announceMultiaddr = null
@@ -220,7 +206,7 @@ async function startTorRelay() {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const startedAt = Date.now()
       try {
-        console.log(`🎯 ${label} attempt ${attempt}/${maxAttempts}`)
+        console.log(`🎯 ${label} attempt ${attempt}/${maxAttempts} -> ${dialMa.toString()}`)
         const conn = await node.dial(dialMa)
         console.log(`🔗 Connected to peer in ${Date.now() - startedAt}ms`)
         return true
@@ -234,19 +220,23 @@ async function startTorRelay() {
     return false
   }
 
-  // ---- Auto-reconnect ----
-  if (args.dial) {
-    const dialMa = multiaddr(args.dial)
-    await dialWithRetry(dialMa, 'initial-dial')
+  // ---- Auto-reconnect & Multi-Dial ----
+  if (args.dials.length > 0) {
+    for (const dialStr of args.dials) {
+      const dialMa = multiaddr(dialStr)
+      await dialWithRetry(dialMa, 'initial-dial')
+    }
 
     let reconnecting = false
     node.addEventListener('peer:disconnect', () => {
       if (reconnecting) return
       reconnecting = true
       setTimeout(async () => {
-        console.log(`♻️  Reconnecting`)
+        console.log(`♻️  Reconnecting to seed nodes`)
         try {
-          await dialWithRetry(dialMa, 'reconnect')
+          for (const dialStr of args.dials) {
+            await dialWithRetry(multiaddr(dialStr), 'reconnect')
+          }
         } finally {
           reconnecting = false
         }

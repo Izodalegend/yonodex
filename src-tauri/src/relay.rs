@@ -1,12 +1,6 @@
 // Yonodex Desktop Client - IPC bridge to Node.js gossipsub relay
 // Whitepaper Layer 5, Section 7.1: Rust owns the order book, Node.js is transport
 // Whitepaper Layer 5, Section 7.3: signed trades also flow through this bridge
-//
-// Spawns `node p2p-tor-relay.mjs` as a child process:
-//   - Rust -> Node via child stdin (JSON lines)
-//   - Node -> Rust via child stdout (JSON lines)
-//
-// Incoming orders and trades are validated and applied to the Rust state.
 
 use crate::commands::AppState;
 use crate::order::Order;
@@ -16,6 +10,16 @@ use tauri::{AppHandle, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::Mutex;
+
+// Whitepaper Layer 4, Section 6.4: Bootstrap Seed Nodes
+// These are the default entry points for new nodes joining the network.
+const DEFAULT_SEED_NODES: &[&str] = &[
+    // Placeholder Tor .onion multiaddrs for Phase 3.A
+    // Format: /onion3/<onion_address>:<port>
+    "/onion3/vww6ybal4bd7szmgncyruucpgfkqahzddi37ktceo3ah7ngmcopnpyyd:4001",
+    // Example clearnet fallback
+    // "/dns4/seed1.yonodex.org/tcp/4001",
+];
 
 pub struct RelayState {
     pub child: Mutex<Option<Child>>,
@@ -47,7 +51,6 @@ fn project_root() -> Result<PathBuf, String> {
 }
 
 /// Spawn the relay. Idempotent - no-op if already running.
-/// Reads YONODEX_DIAL env var for an optional peer multiaddr to dial on startup.
 pub async fn spawn(app: AppHandle) -> Result<(), String> {
     let state = app.state::<RelayState>();
     {
@@ -67,9 +70,21 @@ pub async fn spawn(app: AppHandle) -> Result<(), String> {
     cmd.arg(&script);
     cmd.arg("--listen-port").arg("4001");
 
+    let mut dialed = false;
+
+    // 1. Check for manual override via env var
     if let Ok(dial) = std::env::var("YONODEX_DIAL") {
         if !dial.is_empty() {
             cmd.arg("--dial").arg(dial);
+            dialed = true;
+        }
+    }
+
+    // 2. Fallback to default seed nodes if no manual override was provided
+    if !dialed {
+        for seed in DEFAULT_SEED_NODES {
+            log::info!("dialing default seed node: {}", seed);
+            cmd.arg("--dial").arg(seed);
         }
     }
 
@@ -195,9 +210,6 @@ fn apply_incoming_order(app: &AppHandle, order: Order) -> Result<(), String> {
     let mut book_guard = state.book.lock().map_err(|e| e.to_string())?;
     let book = book_guard.as_mut().ok_or("book not loaded")?;
 
-    // Loopback guard: gossipsub emitSelf echoes our own published orders back.
-    // We already have them locally — skip rather than attempt a redundant apply
-    // (which would correctly fail the nonce check and spam the log).
     if order.owner == book.local_peer() {
         log::debug!("skipping loopback of own order {}", order.id);
         return Ok(());
@@ -234,15 +246,11 @@ fn apply_incoming_cancel(
     Ok(())
 }
 
-/// Apply a trade received from a peer via IPC.
-/// Merges signatures with any local copy — verification happens here so the
-/// relay path is self-contained.
 fn apply_incoming_trade(app: &AppHandle, incoming: crate::trade::Trade) -> Result<(), String> {
     let state = app.state::<AppState>();
     let db_guard = state.db.lock().map_err(|e| e.to_string())?;
     let db = db_guard.as_ref().ok_or("db locked")?;
 
-    // Verify whichever signature came in
     if !incoming.buyer_signature.is_empty() {
         crate::trade::verify_buyer_signature(&incoming)?;
     }
@@ -250,7 +258,6 @@ fn apply_incoming_trade(app: &AppHandle, incoming: crate::trade::Trade) -> Resul
         crate::trade::verify_seller_signature(&incoming)?;
     }
 
-    // Merge with local copy if we have one
     let merged = match crate::db::load_trade(db, &incoming.id).map_err(|e| e.to_string())? {
         Some(mut local) => {
             if local.buyer_signature.is_empty() {
