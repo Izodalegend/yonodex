@@ -1,5 +1,5 @@
 Yonodex Tor Onion Mirror
 =========================
 Status: Live
-Address: djewt3cpfgi43nype4d7u2x5jtyuy6xwlvha2jppxcixa5o53iwr26id.onion
-Gateway: http://djewt3cpfgi43nype4d7u2x5jtyuy6xwlvha2jppxcixa5o53iwr26id.onion/ipfs/QmXijw8sxpmtEh6NpUR3tvpYeBW96658rtCCwtQNeKnwqh/
+Address: vohp5vva732m32iuxu4q5rtxe64ti52232uxffoydbdtbkto64hx2oqd.onion
+Gateway: http://vohp5vva732m32iuxu4q5rtxe64ti52232uxffoydbdtbkto64hx2oqd.onion/ipfs/QmXijw8sxpmtEh6NpUR3tvpYeBW96658rtCCwtQNeKnwqh/
