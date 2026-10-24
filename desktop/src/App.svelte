@@ -8,7 +8,7 @@
   import { dbIsUnlocked } from "./db";
   import type { EIP1193Provider } from "./wallet";
 
-  const version = "0.1.0";
+  const version = "0.1.2";
 
   let unlocked = $state(false);
   let checkingUnlock = $state(true);
