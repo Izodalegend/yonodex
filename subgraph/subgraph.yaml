@@ -1,0 +1,75 @@
+specVersion: 0.0.5
+schema:
+  file: ./schema.graphql
+dataSources:
+  - kind: ethereum
+    name: YonodexEscrowFactory
+    network: sepolia
+    source:
+      address: "0x9ec7E4166847F13baeD8e1A2503f5644F0b4F3DB"
+      abi: YonodexEscrowFactory
+      startBlock: 7000000
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - Escrow
+      abis:
+        - name: YonodexEscrowFactory
+          file: ./abis/YonodexEscrowFactory.json
+      eventHandlers:
+        - event: EscrowCreated(indexed address,indexed address,indexed address,bytes32)
+          handler: handleEscrowCreated
+      file: ./src/factory-mapping.ts
+
+  - kind: ethereum
+    name: YonodexHTLC
+    network: sepolia
+    source:
+      address: "0x989AFB745dD75D5473D5ef9AE14a2C9Aed51D821"
+      abi: YonodexHTLC
+      startBlock: 7000000
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - HTLCSwap
+      abis:
+        - name: YonodexHTLC
+          file: ./abis/YonodexHTLC.json
+      eventHandlers:
+        - event: SwapCreated(indexed bytes32,indexed address,indexed address,address,uint256,bytes32,uint256)
+          handler: handleSwapCreated
+        - event: SwapRedeemed(indexed bytes32,bytes32)
+          handler: handleSwapRedeemed
+        - event: SwapRefunded(indexed bytes32)
+          handler: handleSwapRefunded
+      file: ./src/htlc-mapping.ts
+
+templates:
+  - kind: ethereum
+    name: YonodexEscrow
+    network: sepolia
+    source:
+      abi: YonodexEscrow
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - Escrow
+      abis:
+        - name: YonodexEscrow
+          file: ./abis/YonodexEscrow.json
+      eventHandlers:
+        - event: Deposited(indexed address,uint256)
+          handler: handleDeposited
+        - event: Settled()
+          handler: handleSettled
+        - event: Refunded(indexed address,uint256,uint256)
+          handler: handleRefunded
+        - event: Cancelled()
+          handler: handleCancelled
+      file: ./src/escrow-mapping.ts

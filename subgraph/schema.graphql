@@ -1,0 +1,26 @@
+type Escrow @entity(immutable: false) {
+  id: ID! # The escrow contract address
+  buyer: Bytes!
+  seller: Bytes!
+  salt: Bytes!
+  createdAtBlock: BigInt!
+  status: String! # CREATED, SETTLED, REFUNDED, CANCELLED
+  tokenBuyer: Bytes
+  tokenSeller: Bytes
+  amountBuyer: BigInt
+  amountSeller: BigInt
+  isFundedBuyer: Boolean!
+  isFundedSeller: Boolean!
+}
+
+type HTLCSwap @entity(immutable: false) {
+  id: ID! # The swapId (bytes32)
+  sender: Bytes!
+  receiver: Bytes!
+  token: Bytes! # address(0) for ETH
+  amount: BigInt!
+  hashlock: Bytes!
+  timelock: BigInt!
+  status: String! # CREATED, REDEEMED, REFUNDED
+  preimage: Bytes # Revealed upon redemption
+}
