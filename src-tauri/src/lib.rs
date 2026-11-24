@@ -7,6 +7,7 @@ mod order;
 mod orderbook;
 mod relay;
 mod tor;
+mod ipfs;
 mod trade;
 
 use commands::AppState;
@@ -52,6 +53,7 @@ pub fn run() {
             tor::tor_is_running,
             tor::tor_get_onion_address,
             tor::tor_get_state,
+	    ipfs::upload_to_ipfs
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {
